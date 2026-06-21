@@ -21,7 +21,7 @@ intents = discord.Intents.default()
 intents.members = True # لكي نتمكن من حساب الأعضاء
 intents.message_content = True # لكي يتمكن البوت من قراءة الرسائل والأوامر
 
-bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
+bot = commands.Bot(command_prefix='/', intents=intents, help_command=None)
 
 # إعدادات بسيطة لمكافحة تكرار الرسائل (سبام)
 SPAM_WINDOW_SECONDS = 20  # نافذة فحص التكرار
