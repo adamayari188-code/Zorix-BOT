@@ -425,164 +425,335 @@ async def auto_kick_unauthorized_bots():
         print(f'جاري فحص البوتات في السيرفر: {guild.name}')
         await _kick_unauthorized_bots_logic(guild)
 
-@bot.command(name='count_members')
-async def count_members(ctx):
-    """يحسب عدد الأعضاء في الخادم."""
-    await ctx.send(f'عدد الأعضاء في هذا السيرفر هو: {ctx.guild.member_count}')
 
-@bot.command(name='send_dm')
-@commands.has_permissions(administrator=True) # يتطلب صلاحيات إدارية
-async def send_dm(ctx, member: discord.Member, *, message):
-    """يرسل رسالة خاصة لعضو محدد."""
-    try:
-        await member.send(message)
-        await ctx.send(f'تم إرسال الرسالة إلى {member.display_name}.')
-    except discord.Forbidden:
-        await ctx.send(f'لا يمكن إرسال رسالة خاصة إلى {member.display_name}. قد يكون لديهم الرسائل الخاصة معطلة.')
+# ============= نظام الحماية (Anti-Nuke) =============
+anti_nuke_enabled = True
+anti_nuke_whitelist = set() # معرفات الأعضاء المسموح لهم
+raid_detection_enabled = True
+raid_threshold = 5 # عدد الأعضاء في فترة زمنية قصيرة
+raid_window_seconds = 10
+raid_joined_cache = []
+lockdown_mode = False
 
-@bot.command(name='kick_unauthorized_bots_now')
+@bot.command(name='antinuke')
 @commands.has_permissions(administrator=True)
-async def kick_unauthorized_bots_now(ctx):
-    """يطرد جميع البوتات التي ليس لديها رتبة إدارية فورًا (بناءً على طلب)."""
-    await ctx.send('جاري البحث عن البوتات التي ليس لديها صلاحيات إدارية وطردها...')
-    kicked_bots = await _kick_unauthorized_bots_logic(ctx.guild)
-
-    if kicked_bots:
-        await ctx.send(f'تم طرد البوتات التالية التي لا تملك صلاحيات إدارية: {", ".join(kicked_bots)}')
+async def antinuke_command(ctx, action: str = None, user_id: int = None):
+    """تحكم في نظام الحماية. الاستخدام: !antinuke enable/disable/whitelist/unwhitelist [user_id]"""
+    global anti_nuke_enabled, anti_nuke_whitelist
+    
+    if action == 'enable':
+        anti_nuke_enabled = True
+        await ctx.send('✅ تم تفعيل نظام الحماية.')
+    elif action == 'disable':
+        anti_nuke_enabled = False
+        await ctx.send('❌ تم تعطيل نظام الحماية.')
+    elif action == 'whitelist' and user_id:
+        anti_nuke_whitelist.add(user_id)
+        await ctx.send(f'✅ تم إضافة {user_id} إلى القائمة البيضاء.')
+    elif action == 'unwhitelist' and user_id:
+        anti_nuke_whitelist.discard(user_id)
+        await ctx.send(f'❌ تم إزالة {user_id} من القائمة البيضاء.')
+    elif action == 'list':
+        if anti_nuke_whitelist:
+            await ctx.send(f'📋 القائمة البيضاء: {", ".join(map(str, anti_nuke_whitelist))}')
+        else:
+            await ctx.send('📋 القائمة البيضاء فارغة.')
     else:
-        await ctx.send('لم يتم العثور على بوتات بدون صلاحيات إدارية لطردها.')
+        await ctx.send('الاستخدام: !antinuke enable/disable/whitelist/unwhitelist/list [user_id]')
 
-@bot.command(name='broadcast_message')
-@commands.has_permissions(administrator=True) # يتطلب صلاحيات إدارية
-async def broadcast_message(ctx, channel: discord.TextChannel, *, message):
-    """يرسل رسالة إلى قناة نصية محددة. يمكنك استخدام @everyone أو @here في الرسالة.
-    الاستخدام: !broadcast_message <معرف_القناة> <رسالتك هنا>"""
-    try:
-        await channel.send(message)
-        await ctx.send(f'تم إرسال الرسالة إلى القناة {channel.mention}.')
-    except discord.Forbidden:
-        await ctx.send(f'لا أستطيع إرسال الرسالة إلى {channel.mention}. تأكد من أن لدي صلاحيات الكتابة في هذه القناة.')
-    except Exception as e:
-        await ctx.send(f'حدث خطأ أثناء إرسال الرسالة: {e}')
-
-@bot.command(name='mass_dm')
-@commands.has_permissions(administrator=True) # يتطلب صلاحيات إدارية
-async def mass_dm(ctx, *, message):
-    """يرسل رسالة خاصة إلى جميع أعضاء السيرفر.
-    الاستخدام: !mass_dm <رسالتك هنا>"""
-    await ctx.send('جاري إرسال رسالة خاصة إلى جميع أعضاء السيرفر. قد يستغرق هذا بعض الوقت...')
-    
-    success_count = 0
-    failed_count = 0
-    failed_members = []
-
-    for member in ctx.guild.members:
-        if member.bot: # لا ترسل رسائل خاصة للبوتات
-            continue
-        try:
-            await member.send(message)
-            success_count += 1
-            # يمكنك إضافة تأخير بسيط هنا لتجنب تجاوز حدود ديسكورد إذا كان السيرفر كبيرًا جدًا
-            # await asyncio.sleep(0.5) # مثال: تأخير 0.5 ثانية لكل رسالة
-        except discord.Forbidden: # العضو عطل الرسائل الخاصة
-            failed_count += 1
-            failed_members.append(member.display_name)
-        except Exception as e:
-            failed_count += 1
-            failed_members.append(f'{member.display_name} (خطأ: {e})')
-
-    result_message = f'تم إرسال رسائل خاصة إلى {success_count} عضو بنجاح.'
-    if failed_count > 0:
-        result_message += f' فشل إرسال الرسائل إلى {failed_count} عضو. القائمة: {", ".join(failed_members[:10])}...' if len(failed_members) > 10 else f' فشل إرسال الرسائل إلى {failed_count} عضو. القائمة: {", ".join(failed_members)}'
-    
-    await ctx.send(result_message)
-
-@bot.command(name='clear_channel', help='يحذف جميع الرسائل (التي لا يزيد عمرها عن 14 يومًا) من القناة المحددة أو القناة الحالية. يتطلب صلاحيات إدارية.')
-@commands.has_permissions(administrator=True) # يتطلب صلاحيات إدارية
-async def clear_channel(ctx, channel: discord.TextChannel = None):
-    if channel is None:
-        channel = ctx.channel
-
-    deleted_count = 0
-    try:
-        deleted = await channel.purge(limit=None) # limit=None يعني حذف كل ما يمكن حذفه
-        deleted_count = len(deleted)
-        await ctx.send(f'تم حذف {deleted_count} رسالة بنجاح من القناة {channel.mention}. (الرسائل الأقدم من 14 يومًا لا يمكن حذفها بشكل جماعي).' , delete_after=10)
-    except discord.Forbidden:
-        await ctx.send(f'لا أمتلك صلاحيات `Manage Messages` لحذف الرسائل في القناة {channel.mention}.')
-    except Exception as e:
-        await ctx.send(f'حدث خطأ أثناء حذف الرسائل من القناة {channel.mention}: {e}')
-
-
-@bot.command(name='delete_thread', help='يحذف الثريد المحدد. إذا لم تحدد ثريدًا وكان الأمر داخل ثريد، سيتم حذف الثريد الحالي. يتطلب صلاحيات إدارية.')
+@bot.command(name='lockdown')
 @commands.has_permissions(administrator=True)
-async def delete_thread(ctx, thread: discord.Thread = None):
-    target_thread = thread
+async def lockdown_command(ctx, action: str = None):
+    """تفعيل/تعطيل وضع الطوارئ. الاستخدام: !lockdown enable/disable"""
+    global lockdown_mode
+    
+    if action == 'enable':
+        lockdown_mode = True
+        await ctx.send('🔒 تم تفعيل وضع الطوارئ. لا يمكن للأعضاء الجدد الانضمام.')
+    elif action == 'disable':
+        lockdown_mode = False
+        await ctx.send('🔓 تم تعطيل وضع الطوارئ.')
+    else:
+        status = 'مفعل' if lockdown_mode else 'معطل'
+        await ctx.send(f'وضع الطوارئ: {status}')
 
-    if target_thread is None and isinstance(ctx.channel, discord.Thread):
-        target_thread = ctx.channel
+# ============= نظام اللوق (Logs System) =============
+logs_enabled = True
+logs_channel_id = None
 
-    if target_thread is None:
-        await ctx.send('يرجى تحديد ثريد للحذف، أو استخدام الأمر من داخل الثريد نفسه.')
+@bot.command(name='logs')
+@commands.has_permissions(administrator=True)
+async def logs_command(ctx, action: str = None, channel: discord.TextChannel = None):
+    """تحكم في نظام اللوق. الاستخدام: !logs enable/disable/setchannel [channel]"""
+    global logs_enabled, logs_channel_id
+    
+    if action == 'enable':
+        logs_enabled = True
+        await ctx.send('✅ تم تفعيل نظام اللوق.')
+    elif action == 'disable':
+        logs_enabled = False
+        await ctx.send('❌ تم تعطيل نظام اللوق.')
+    elif action == 'setchannel' and channel:
+        logs_channel_id = channel.id
+        await ctx.send(f'✅ تم ضبط قناة اللوق إلى: {channel.mention}')
+    else:
+        status = 'مفعل' if logs_enabled else 'معطل'
+        channel_mention = f'<#{logs_channel_id}>' if logs_channel_id else 'غير محدد'
+        await ctx.send(f'نظام اللوق: {status}\nقناة اللوق: {channel_mention}')
+
+async def send_log(guild, action, details):
+    """إرسال لوج إلى قناة اللوق"""
+    if not logs_enabled or not logs_channel_id:
         return
+    
+    channel = guild.get_channel(logs_channel_id)
+    if channel:
+        embed = discord.Embed(
+            title=f"📜 {action}",
+            description=details,
+            color=discord.Color.blue(),
+            timestamp=datetime.now(timezone.utc)
+        )
+        await channel.send(embed=embed)
 
-    try:
-        thread_name = target_thread.name
-        await target_thread.delete()
-        await ctx.send(f'تم حذف الثريد: **{thread_name}**.')
-    except discord.Forbidden:
-        await ctx.send('لا أمتلك صلاحية حذف هذا الثريد. تأكد من صلاحياتي وترتيبي.')
-    except Exception as e:
-        await ctx.send(f'حدث خطأ أثناء حذف الثريد: {e}')
+# ============= نظام التذاكر (Tickets) =============
+tickets_enabled = True
+ticket_category_id = None
+ticket_counter = 0
 
+@bot.command(name='ticket')
+async def ticket_command(ctx):
+    """إنشاء تذكرة جديدة"""
+    if not tickets_enabled:
+        await ctx.send('❌ نظام التذاكر معطل.')
+        return
+    
+    global ticket_counter
+    ticket_counter += 1
+    
+    category = ctx.guild.get_channel(ticket_category_id) if ticket_category_id else None
+    if not category:
+        # إنشاء category للتذاكر إذا لم يكن موجوداً
+        category = await ctx.guild.create_category('🎫 Tickets')
+        ticket_category_id = category.id
+    
+    overwrites = {
+        ctx.guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        ctx.author: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+        ctx.guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True),
+    }
+    
+    ticket_channel = await ctx.guild.create_text_channel(
+        name=f'ticket-{ticket_counter}',
+        category=category,
+        overwrites=overwrites,
+        topic=f'Ticket for {ctx.author} ({ctx.author.id})'
+    )
+    
+    await ticket_channel.send(f'🎫 تم إنشاء تذكرة جديدة!\n\nالصاحب: {ctx.author.mention}\nاستخدم الأوامر التالية:\n- `!close` لإغلاق التذكرة\n- `!add @user` لإضافة عضو\n- `!remove @user` لإزالة عضو')
+    await ctx.send(f'✅ تم إنشاء تذكرتك: {ticket_channel.mention}')
 
-@bot.command(name='delete_channel', help='يحذف القناة المحددة أو القناة الحالية. يتطلب صلاحيات إدارية.')
+@bot.command(name='close')
+async def close_ticket(ctx):
+    """إغلاق التذكرة الحالية"""
+    if not ctx.channel.name.startswith('ticket-'):
+        await ctx.send('❌ هذا الأمر يعمل فقط في قنوات التذاكر.')
+        return
+    
+    await ctx.send('🔒 جاري إغلاق التذكرة...')
+    await asyncio.sleep(2)
+    await ctx.channel.delete()
+
+@bot.command(name='add')
+async def add_to_ticket(ctx, member: discord.Member):
+    """إضافة عضو إلى التذكرة"""
+    if not ctx.channel.name.startswith('ticket-'):
+        await ctx.send('❌ هذا الأمر يعمل فقط في قنوات التذاكر.')
+        return
+    
+    await ctx.channel.set_permissions(member, view_channel=True, send_messages=True, read_message_history=True)
+    await ctx.send(f'✅ تم إضافة {member.mention} إلى التذكرة.')
+
+@bot.command(name='remove')
+async def remove_from_ticket(ctx, member: discord.Member):
+    """إزالة عضو من التذكرة"""
+    if not ctx.channel.name.startswith('ticket-'):
+        await ctx.send('❌ هذا الأمر يعمل فقط في قنوات التذاكر.')
+        return
+    
+    await ctx.channel.set_permissions(member, view_channel=False, send_messages=False, read_message_history=False)
+    await ctx.send(f'❌ تم إزالة {member.mention} من التذكرة.')
+
+@bot.command(name='tickets')
 @commands.has_permissions(administrator=True)
-async def delete_channel(ctx, channel: discord.TextChannel = None):
-    target_channel = channel or ctx.channel
+async def tickets_admin(ctx, action: str = None):
+    """تحكم في نظام التذاكر. الاستخدام: !tickets enable/disable"""
+    global tickets_enabled
+    
+    if action == 'enable':
+        tickets_enabled = True
+        await ctx.send('✅ تم تفعيل نظام التذاكر.')
+    elif action == 'disable':
+        tickets_enabled = False
+        await ctx.send('❌ تم تعطيل نظام التذاكر.')
+    else:
+        status = 'مفعل' if tickets_enabled else 'معطل'
+        await ctx.send(f'نظام التذاكر: {status}')
 
-    try:
-        channel_name = target_channel.name
-        await ctx.send(f'جاري حذف القناة: **{channel_name}**...')
-        await target_channel.delete(reason=f'Deleted by {ctx.author} using bot command.')
-    except discord.Forbidden:
-        await ctx.send('لا أمتلك صلاحية حذف هذه القناة. تأكد من صلاحياتي وترتيبي.')
-    except Exception as e:
-        await ctx.send(f'حدث خطأ أثناء حذف القناة: {e}')
+# ============= نظام إدارة الرتب (Roles System) =============
+auto_roles_enabled = True
+auto_roles = {} # {role_id: required_level}
 
+@bot.command(name='role')
+@commands.has_permissions(manage_roles=True)
+async def role_command(ctx, action: str, role: discord.Role, user: discord.Member = None):
+    """إدارة الرتب. الاستخدام: !role give/remove @role [@user]"""
+    if action == 'give' and user:
+        await user.add_roles(role)
+        await ctx.send(f'✅ تم إعطاء الرتبة {role.name} لـ {user.mention}.')
+    elif action == 'remove' and user:
+        await user.remove_roles(role)
+        await ctx.send(f'❌ تم إزالة الرتبة {role.name} من {user.mention}.')
+    else:
+        await ctx.send('الاستخدام: !role give/remove @role [@user]')
 
-@bot.command(name='restart', help='يعيد تشغيل البوت. يتطلب صلاحيات إدارية.')
+@bot.command(name='autorole')
 @commands.has_permissions(administrator=True)
-async def restart_bot(ctx):
-    await ctx.send('جاري إعادة تشغيل البوت...')
-    await bot.close()
-    os.execv(sys.executable, [sys.executable] + sys.argv)
+async def autorole_command(ctx, action: str, role: discord.Role = None, level: int = None):
+    """إدارة الرتب التلقائية. الاستخدام: !autorole add/remove/list [@role] [level]"""
+    global auto_roles
+    
+    if action == 'add' and role and level is not None:
+        auto_roles[role.id] = level
+        await ctx.send(f'✅ تم إضافة الرتبة {role.name} للمستوى {level}.')
+    elif action == 'remove' and role:
+        auto_roles.pop(role.id, None)
+        await ctx.send(f'❌ تم إزالة الرتبة {role.name}.')
+    elif action == 'list':
+        if auto_roles:
+            role_list = []
+            for role_id, lvl in auto_roles.items():
+                r = ctx.guild.get_role(role_id)
+                if r:
+                    role_list.append(f'{r.name}: المستوى {lvl}')
+            await ctx.send(f'📋 الرتب التلقائية:\n' + '\n'.join(role_list))
+        else:
+            await ctx.send('📋 لا توجد رتب تلقائية.')
+    else:
+        await ctx.send('الاستخدام: !autorole add/remove/list [@role] [level]')
 
+# ============= نظام إحصائيات السيرفر =============
+@bot.command(name='stats')
+async def stats_command(ctx):
+    """عرض إحصائيات السيرفر"""
+    guild = ctx.guild
+    
+    total_members = guild.member_count
+    online_members = sum(1 for m in guild.members if m.status != discord.Status.offline)
+    text_channels = len(guild.text_channels)
+    voice_channels = len(guild.voice_channels)
+    roles = len(guild.roles)
+    
+    embed = discord.Embed(
+        title=f'📊 إحصائيات {guild.name}',
+        color=discord.Color.green()
+    )
+    embed.add_field(name='👥 إجمالي الأعضاء', value=total_members, inline=True)
+    embed.add_field(name='🟢 متصلين', value=online_members, inline=True)
+    embed.add_field(name='💬 القنوات النصية', value=text_channels, inline=True)
+    embed.add_field(name='🔊 القنوات الصوتية', value=voice_channels, inline=True)
+    embed.add_field(name='🏷️ الرتب', value=roles, inline=True)
+    embed.set_footer(text=f'السيرفر: {guild.name}')
+    embed.set_thumbnail(url=guild.icon.url if guild.icon else None)
+    
+    await ctx.send(embed=embed)
 
-@bot.command(name='set_chat_channel', help='يضبط قناة مخصصة يتكلم فيها البوت مع الأعضاء. إذا لم تحدد قناة، يستخدم القناة الحالية. يتطلب صلاحيات إدارية.')
+# ============= نظام التحكم (Dashboard Control) =============
+systems_status = {
+    'anti_nuke': anti_nuke_enabled,
+    'logs': logs_enabled,
+    'tickets': tickets_enabled,
+    'auto_roles': auto_roles_enabled,
+}
+
+@bot.command(name='system')
 @commands.has_permissions(administrator=True)
-async def set_chat_channel(ctx, channel: discord.TextChannel = None):
-    global CHAT_CHANNEL_ID
-    target_channel = channel or ctx.channel
-    CHAT_CHANNEL_ID = target_channel.id
-    await ctx.send(f'تم ضبط قناة الدردشة المخصصة إلى: {target_channel.mention}')
+async def system_command(ctx, system_name: str = None, action: str = None):
+    """تحكم في الأنظمة. الاستخدام: !system [system_name] [enable/disable/list]"""
+    global systems_status, anti_nuke_enabled, logs_enabled, tickets_enabled, auto_roles_enabled
+    
+    if system_name == 'list' or not system_name:
+        status_text = '\n'.join([f'✅ {name}: {"مفعل" if status else "معطل"}' for name, status in systems_status.items()])
+        await ctx.send(f'🎛️ حالة الأنظمة:\n{status_text}')
+    elif system_name in systems_status and action:
+        if action == 'enable':
+            systems_status[system_name] = True
+            if system_name == 'anti_nuke':
+                anti_nuke_enabled = True
+            elif system_name == 'logs':
+                logs_enabled = True
+            elif system_name == 'tickets':
+                tickets_enabled = True
+            elif system_name == 'auto_roles':
+                auto_roles_enabled = True
+            await ctx.send(f'✅ تم تفعيل نظام {system_name}.')
+        elif action == 'disable':
+            systems_status[system_name] = False
+            if system_name == 'anti_nuke':
+                anti_nuke_enabled = False
+            elif system_name == 'logs':
+                logs_enabled = False
+            elif system_name == 'tickets':
+                tickets_enabled = False
+            elif system_name == 'auto_roles':
+                auto_roles_enabled = False
+            await ctx.send(f'❌ تم تعطيل نظام {system_name}.')
+    else:
+        await ctx.send('الاستخدام: !system [anti_nuke/logs/tickets/auto_roles] [enable/disable/list]')
 
+# ============= أحداث الحماية واللوق =============
+@bot.event
+async def on_member_ban(guild, user):
+    await send_log(guild, '🚫 Ban', f'تم حظر العضو: {user} ({user.id})')
 
-@bot.command(name='disable_chat_channel', help='يعطل قناة الدردشة المخصصة للبوت. يتطلب صلاحيات إدارية.')
-@commands.has_permissions(administrator=True)
-async def disable_chat_channel(ctx):
-    global CHAT_CHANNEL_ID
-    CHAT_CHANNEL_ID = None
-    await ctx.send('تم تعطيل قناة الدردشة المخصصة.')
+@bot.event
+async def on_member_unban(guild, user):
+    await send_log(guild, '✅ Unban', f'تم فك الحظر عن: {user} ({user.id})')
 
+@bot.event
+async def on_member_remove(member):
+    await send_log(member.guild, '👋 Member Left', f'غادر العضو: {member} ({member.id})')
 
-@bot.command(name='help')
-async def help_command(ctx):
-    """يعرض قائمة بجميع الأوامر المتاحة ووصفها."""
-    help_text = "**الأوامر المتاحة:**\n"
-    for command in bot.commands:
-        help_text += f'-   **!{command.name}**: {command.help or "لا يوجد وصف."}\n'
-    await ctx.send(help_text)
+@bot.event
+async def on_guild_channel_delete(channel):
+    if anti_nuke_enabled and channel.guild.me.guild_permissions.administrator:
+        await send_log(channel.guild, '🗑️ Channel Deleted', f'تم حذف القناة: {channel.name} ({channel.id})')
+
+@bot.event
+async def on_guild_role_delete(role):
+    if anti_nuke_enabled and role.guild.me.guild_permissions.administrator:
+        await send_log(role.guild, '🏷️ Role Deleted', f'تم حذف الرتبة: {role.name} ({role.id})')
+
+@bot.event
+async def on_guild_role_create(role):
+    await send_log(role.guild, '🏷️ Role Created', f'تم إنشاء الرتبة: {role.name} ({role.id})')
+
+@bot.event
+async def on_member_join(member):
+    if lockdown_mode:
+        await member.kick(reason='Lockdown mode active')
+        return
+    
+    await send_log(member.guild, '👋 Member Joined', f'انضم العضو: {member} ({member.id})')
+    
+    # إعطاء الرتب التلقائية
+    if auto_roles_enabled and auto_roles:
+        for role_id, level in auto_roles.items():
+            if level == 0: # الرتبة للمستوى 0 تعطى للجميع
+                role = member.guild.get_role(role_id)
+                if role:
+                    await member.add_roles(role)
+
 
 # تشغيل البوت باستخدام التوكن الخاص بك
 TOKEN = os.getenv('DISCORD_TOKEN')
