@@ -718,6 +718,73 @@ async def system_command(ctx, system_name: str = None, action: str = None):
     else:
         await ctx.send('الاستخدام: !system [anti_nuke/logs/tickets/auto_roles] [enable/disable/list]')
 
+# ============= نظام المساعدة =============
+@bot.command(name='help')
+async def help_command(ctx):
+    """عرض جميع الخدمات والأوامر المتاحة"""
+    embed = discord.Embed(
+        title='🤖 خدمات البوت',
+        description='جميع الخدمات والأوامر المتاحة في البوت',
+        color=discord.Color.blue()
+    )
+    
+    embed.add_field(
+        name='🛡️ نظام الحماية (Anti-Nuke)',
+        value='منع حذف الرومات والرتب، وضع الطوارئ، القائمة البيضاء\nالأوامر: `/antinuke`, `/lockdown`',
+        inline=False
+    )
+    
+    embed.add_field(
+        name='📜 نظام اللوق (Logs System)',
+        value='تسجيل جميع الأحداث في قناة مخصصة\nالأمر: `/logs`',
+        inline=False
+    )
+    
+    embed.add_field(
+        name='🎫 نظام التذاكر (Tickets)',
+        value='إنشاء تذاكر دعم، إغلاق، إضافة/إزالة أعضاء\nالأوامر: `/ticket`, `/close`, `/add`, `/remove`',
+        inline=False
+    )
+    
+    embed.add_field(
+        name='🧑‍💼 نظام إدارة الرتب (Roles System)',
+        value='إعطاء/سحب رتب، رتب تلقائية\nالأوامر: `/role`, `/autorole`',
+        inline=False
+    )
+    
+    embed.add_field(
+        name='📊 نظام إحصائيات السيرفر',
+        value='عرض عدد الأعضاء، المتصلين، القنوات، الرتب\nالأمر: `/stats`',
+        inline=False
+    )
+    
+    embed.add_field(
+        name='🤖 نظام التحكم (Dashboard Control)',
+        value='تشغيل/إيقاف جميع الأنظمة\nالأمر: `/system`',
+        inline=False
+    )
+    
+    embed.add_field(
+        name='💬 الرد الذكي',
+        value='البوت يرد على أسئلتك باستخدام الذكاء الاصطناعي',
+        inline=False
+    )
+    
+    embed.add_field(
+        name='🚫 فلترة الكلام',
+        value='حذف الكلام غير اللائق وحظر تلقائي',
+        inline=False
+    )
+    
+    embed.add_field(
+        name='⚡ مكافحة السبام',
+        value='تايم أوت تصاعدي لتكرار الرسائل',
+        inline=False
+    )
+    
+    embed.set_footer(text='استخدم / قبل كل أمر')
+    await ctx.send(embed=embed)
+
 # ============= أحداث الحماية واللوق =============
 @bot.event
 async def on_member_ban(guild, user):
