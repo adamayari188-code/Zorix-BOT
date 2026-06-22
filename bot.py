@@ -262,6 +262,13 @@ async def generate_ai_reply(user_text: str, username: str) -> str:
 async def on_ready():
     print(f'البوت جاهز! تم تسجيل الدخول باسم {bot.user}')
     auto_kick_unauthorized_bots.start() # ابدأ مهمة الطرد التلقائي عند تشغيل البوت
+    
+    # تغيير اسم البوت
+    try:
+        await bot.user.edit(name="Zorix BOT")
+        print('تم تغيير اسم البوت إلى Zorix BOT')
+    except Exception as e:
+        print(f'فشل تغيير اسم البوت: {e}')
 
 @bot.event
 async def on_guild_join(guild):
