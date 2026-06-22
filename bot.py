@@ -265,7 +265,7 @@ async def on_ready():
     
     # تغيير اسم البوت
     try:
-        await bot.user.edit(name="Zorix BOT")
+        await bot.user.edit(username="Zorix BOT")
         print('تم تغيير اسم البوت إلى Zorix BOT')
     except Exception as e:
         print(f'فشل تغيير اسم البوت: {e}')
