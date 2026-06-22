@@ -460,23 +460,23 @@ async def antinuke_command(interaction: discord.Interaction, action: str = None,
     
     if action == 'enable':
         anti_nuke_enabled = True
-        await interaction.response.send_message('✅ تم تفعيل نظام الحماية.')
+        await interaction.response.send_message('✅ تم تفعيل نظام الحماية.', ephemeral=True)
     elif action == 'disable':
         anti_nuke_enabled = False
-        await interaction.response.send_message('❌ تم تعطيل نظام الحماية.')
+        await interaction.response.send_message('❌ تم تعطيل نظام الحماية.', ephemeral=True)
     elif action == 'whitelist' and user_id:
         anti_nuke_whitelist.add(user_id)
-        await interaction.response.send_message(f'✅ تم إضافة {user_id} إلى القائمة البيضاء.')
+        await interaction.response.send_message(f'✅ تم إضافة {user_id} إلى القائمة البيضاء.', ephemeral=True)
     elif action == 'unwhitelist' and user_id:
         anti_nuke_whitelist.discard(user_id)
-        await interaction.response.send_message(f'❌ تم إزالة {user_id} من القائمة البيضاء.')
+        await interaction.response.send_message(f'❌ تم إزالة {user_id} من القائمة البيضاء.', ephemeral=True)
     elif action == 'list':
         if anti_nuke_whitelist:
-            await interaction.response.send_message(f'📋 القائمة البيضاء: {", ".join(map(str, anti_nuke_whitelist))}')
+            await interaction.response.send_message(f'📋 القائمة البيضاء: {", ".join(map(str, anti_nuke_whitelist))}', ephemeral=True)
         else:
-            await interaction.response.send_message('📋 القائمة البيضاء فارغة.')
+            await interaction.response.send_message('📋 القائمة البيضاء فارغة.', ephemeral=True)
     else:
-        await interaction.response.send_message('الاستخدام: /antinuke enable/disable/whitelist/unwhitelist/list [user_id]')
+        await interaction.response.send_message('الاستخدام: /antinuke enable/disable/whitelist/unwhitelist/list [user_id]', ephemeral=True)
 
 @bot.tree.command(name='lockdown', description='تفعيل/تعطيل وضع الطوارئ')
 async def lockdown_command(interaction: discord.Interaction, action: str = None):
@@ -489,13 +489,13 @@ async def lockdown_command(interaction: discord.Interaction, action: str = None)
     
     if action == 'enable':
         lockdown_mode = True
-        await interaction.response.send_message('🔒 تم تفعيل وضع الطوارئ. لا يمكن للأعضاء الجدد الانضمام.')
+        await interaction.response.send_message('🔒 تم تفعيل وضع الطوارئ. لا يمكن للأعضاء الجدد الانضمام.', ephemeral=True)
     elif action == 'disable':
         lockdown_mode = False
-        await interaction.response.send_message('🔓 تم تعطيل وضع الطوارئ.')
+        await interaction.response.send_message('🔓 تم تعطيل وضع الطوارئ.', ephemeral=True)
     else:
         status = 'مفعل' if lockdown_mode else 'معطل'
-        await interaction.response.send_message(f'وضع الطوارئ: {status}')
+        await interaction.response.send_message(f'وضع الطوارئ: {status}', ephemeral=True)
 
 # ============= نظام اللوق (Logs System) =============
 logs_enabled = True
@@ -512,17 +512,17 @@ async def logs_command(interaction: discord.Interaction, action: str = None, cha
     
     if action == 'enable':
         logs_enabled = True
-        await interaction.response.send_message('✅ تم تفعيل نظام اللوق.')
+        await interaction.response.send_message('✅ تم تفعيل نظام اللوق.', ephemeral=True)
     elif action == 'disable':
         logs_enabled = False
-        await interaction.response.send_message('❌ تم تعطيل نظام اللوق.')
+        await interaction.response.send_message('❌ تم تعطيل نظام اللوق.', ephemeral=True)
     elif action == 'setchannel' and channel:
         logs_channel_id = channel.id
-        await interaction.response.send_message(f'✅ تم ضبط قناة اللوق إلى: {channel.mention}')
+        await interaction.response.send_message(f'✅ تم ضبط قناة اللوق إلى: {channel.mention}', ephemeral=True)
     else:
         status = 'مفعل' if logs_enabled else 'معطل'
         channel_mention = f'<#{logs_channel_id}>' if logs_channel_id else 'غير محدد'
-        await interaction.response.send_message(f'نظام اللوق: {status}\nقناة اللوق: {channel_mention}')
+        await interaction.response.send_message(f'نظام اللوق: {status}\nقناة اللوق: {channel_mention}', ephemeral=True)
 
 async def send_log(guild, action, details):
     """إرسال لوج إلى قناة اللوق"""
@@ -548,7 +548,7 @@ ticket_counter = 0
 async def ticket_command(interaction: discord.Interaction):
     """إنشاء تذكرة جديدة"""
     if not tickets_enabled:
-        await interaction.response.send_message('❌ نظام التذاكر معطل.')
+        await interaction.response.send_message('❌ نظام التذاكر معطل.', ephemeral=True)
         return
     
     global ticket_counter
@@ -574,7 +574,7 @@ async def ticket_command(interaction: discord.Interaction):
     )
     
     await ticket_channel.send(f'🎫 تم إنشاء تذكرة جديدة!\n\nالصاحب: {interaction.user.mention}\nاستخدم الأوامر التالية:\n- `/close` لإغلاق التذكرة\n- `/add @user` لإضافة عضو\n- `/remove @user` لإزالة عضو')
-    await interaction.response.send_message(f'✅ تم إنشاء تذكرتك: {ticket_channel.mention}')
+    await interaction.response.send_message(f'✅ تم إنشاء تذكرتك: {ticket_channel.mention}', ephemeral=True)
 
 @bot.tree.command(name='close', description='إغلاق التذكرة الحالية')
 async def close_ticket(interaction: discord.Interaction):
@@ -583,7 +583,7 @@ async def close_ticket(interaction: discord.Interaction):
         await interaction.response.send_message('❌ هذا الأمر يعمل فقط في قنوات التذاكر.')
         return
     
-    await interaction.response.send_message('🔒 جاري إغلاق التذكرة...')
+    await interaction.response.send_message('🔒 جاري إغلاق التذكرة...', ephemeral=True)
     await asyncio.sleep(2)
     await interaction.channel.delete()
 
@@ -595,7 +595,7 @@ async def add_to_ticket(interaction: discord.Interaction, member: discord.Member
         return
     
     await interaction.channel.set_permissions(member, view_channel=True, send_messages=True, read_message_history=True)
-    await interaction.response.send_message(f'✅ تم إضافة {member.mention} إلى التذكرة.')
+    await interaction.response.send_message(f'✅ تم إضافة {member.mention} إلى التذكرة.', ephemeral=True)
 
 @bot.tree.command(name='remove', description='إزالة عضو من التذكرة')
 async def remove_from_ticket(interaction: discord.Interaction, member: discord.Member):
@@ -605,7 +605,7 @@ async def remove_from_ticket(interaction: discord.Interaction, member: discord.M
         return
     
     await interaction.channel.set_permissions(member, view_channel=False, send_messages=False, read_message_history=False)
-    await interaction.response.send_message(f'❌ تم إزالة {member.mention} من التذكرة.')
+    await interaction.response.send_message(f'❌ تم إزالة {member.mention} من التذكرة.', ephemeral=True)
 
 @bot.tree.command(name='tickets', description='تحكم في نظام التذاكر')
 async def tickets_admin(interaction: discord.Interaction, action: str = None):
@@ -618,13 +618,13 @@ async def tickets_admin(interaction: discord.Interaction, action: str = None):
     
     if action == 'enable':
         tickets_enabled = True
-        await interaction.response.send_message('✅ تم تفعيل نظام التذاكر.')
+        await interaction.response.send_message('✅ تم تفعيل نظام التذاكر.', ephemeral=True)
     elif action == 'disable':
         tickets_enabled = False
-        await interaction.response.send_message('❌ تم تعطيل نظام التذاكر.')
+        await interaction.response.send_message('❌ تم تعطيل نظام التذاكر.', ephemeral=True)
     else:
         status = 'مفعل' if tickets_enabled else 'معطل'
-        await interaction.response.send_message(f'نظام التذاكر: {status}')
+        await interaction.response.send_message(f'نظام التذاكر: {status}', ephemeral=True)
 
 # ============= نظام إدارة الرتب (Roles System) =============
 auto_roles_enabled = True
@@ -639,12 +639,12 @@ async def role_command(interaction: discord.Interaction, action: str, role: disc
     
     if action == 'give' and user:
         await user.add_roles(role)
-        await interaction.response.send_message(f'✅ تم إعطاء الرتبة {role.name} لـ {user.mention}.')
+        await interaction.response.send_message(f'✅ تم إعطاء الرتبة {role.name} لـ {user.mention}.', ephemeral=True)
     elif action == 'remove' and user:
         await user.remove_roles(role)
-        await interaction.response.send_message(f'❌ تم إزالة الرتبة {role.name} من {user.mention}.')
+        await interaction.response.send_message(f'❌ تم إزالة الرتبة {role.name} من {user.mention}.', ephemeral=True)
     else:
-        await interaction.response.send_message('الاستخدام: /role give/remove @role [@user]')
+        await interaction.response.send_message('الاستخدام: /role give/remove @role [@user]', ephemeral=True)
 
 @bot.tree.command(name='autorole', description='إدارة الرتب التلقائية')
 async def autorole_command(interaction: discord.Interaction, action: str, role: discord.Role = None, level: int = None):
@@ -657,10 +657,10 @@ async def autorole_command(interaction: discord.Interaction, action: str, role: 
     
     if action == 'add' and role and level is not None:
         auto_roles[role.id] = level
-        await interaction.response.send_message(f'✅ تم إضافة الرتبة {role.name} للمستوى {level}.')
+        await interaction.response.send_message(f'✅ تم إضافة الرتبة {role.name} للمستوى {level}.', ephemeral=True)
     elif action == 'remove' and role:
         auto_roles.pop(role.id, None)
-        await interaction.response.send_message(f'❌ تم إزالة الرتبة {role.name}.')
+        await interaction.response.send_message(f'❌ تم إزالة الرتبة {role.name}.', ephemeral=True)
     elif action == 'list':
         if auto_roles:
             role_list = []
@@ -668,11 +668,11 @@ async def autorole_command(interaction: discord.Interaction, action: str, role: 
                 r = interaction.guild.get_role(role_id)
                 if r:
                     role_list.append(f'{r.name}: المستوى {lvl}')
-            await interaction.response.send_message(f'📋 الرتب التلقائية:\n' + '\n'.join(role_list))
+            await interaction.response.send_message(f'📋 الرتب التلقائية:\n' + '\n'.join(role_list), ephemeral=True)
         else:
-            await interaction.response.send_message('📋 لا توجد رتب تلقائية.')
+            await interaction.response.send_message('📋 لا توجد رتب تلقائية.', ephemeral=True)
     else:
-        await interaction.response.send_message('الاستخدام: /autorole add/remove/list [@role] [level]')
+        await interaction.response.send_message('الاستخدام: /autorole add/remove/list [@role] [level]', ephemeral=True)
 
 # ============= نظام إحصائيات السيرفر =============
 @bot.tree.command(name='stats', description='عرض إحصائيات السيرفر')
@@ -698,7 +698,7 @@ async def stats_command(interaction: discord.Interaction):
     embed.set_footer(text=f'السيرفر: {guild.name}')
     embed.set_thumbnail(url=guild.icon.url if guild.icon else None)
     
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # ============= نظام التحكم (Dashboard Control) =============
 systems_status = {
@@ -719,7 +719,7 @@ async def system_command(interaction: discord.Interaction, system_name: str = No
     
     if system_name == 'list' or not system_name:
         status_text = '\n'.join([f'✅ {name}: {"مفعل" if status else "معطل"}' for name, status in systems_status.items()])
-        await interaction.response.send_message(f'🎛️ حالة الأنظمة:\n{status_text}')
+        await interaction.response.send_message(f'🎛️ حالة الأنظمة:\n{status_text}', ephemeral=True)
     elif system_name in systems_status and action:
         if action == 'enable':
             systems_status[system_name] = True
@@ -731,7 +731,7 @@ async def system_command(interaction: discord.Interaction, system_name: str = No
                 tickets_enabled = True
             elif system_name == 'auto_roles':
                 auto_roles_enabled = True
-            await interaction.response.send_message(f'✅ تم تفعيل نظام {system_name}.')
+            await interaction.response.send_message(f'✅ تم تفعيل نظام {system_name}.', ephemeral=True)
         elif action == 'disable':
             systems_status[system_name] = False
             if system_name == 'anti_nuke':
@@ -742,9 +742,9 @@ async def system_command(interaction: discord.Interaction, system_name: str = No
                 tickets_enabled = False
             elif system_name == 'auto_roles':
                 auto_roles_enabled = False
-            await interaction.response.send_message(f'❌ تم تعطيل نظام {system_name}.')
+            await interaction.response.send_message(f'❌ تم تعطيل نظام {system_name}.', ephemeral=True)
     else:
-        await interaction.response.send_message('الاستخدام: /system [anti_nuke/logs/tickets/auto_roles] [enable/disable/list]')
+        await interaction.response.send_message('الاستخدام: /system [anti_nuke/logs/tickets/auto_roles] [enable/disable/list]', ephemeral=True)
 
 # ============= نظام المساعدة =============
 @bot.tree.command(name='help', description='عرض جميع الخدمات والأوامر المتاحة')
@@ -811,7 +811,7 @@ async def help_command(interaction: discord.Interaction):
     )
     
     embed.set_footer(text='استخدم / قبل كل أمر')
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # ============= أحداث الحماية واللوق =============
 @bot.event
