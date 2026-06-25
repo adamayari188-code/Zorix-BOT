@@ -8,9 +8,16 @@ import aiohttp
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 import re
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-import threading
+
+# Optional Flask import for dashboard API
+try:
+    from flask import Flask, request, jsonify
+    from flask_cors import CORS
+    import threading
+    FLASK_AVAILABLE = True
+except ImportError:
+    FLASK_AVAILABLE = False
+    print("Flask not installed. Dashboard API features will be disabled.")
 
 load_dotenv() # حمل المتغيرات من ملف .env
 
@@ -1130,358 +1137,360 @@ async def on_member_join(member):
 
 
 # ============= Flask API Server for Dashboard Integration =============
-app = Flask(__name__)
-CORS(app)
+if FLASK_AVAILABLE:
+    app = Flask(__name__)
+    CORS(app)
 
-# Store bot instance for API access
-bot_instance = bot
+    # Store bot instance for API access
+    bot_instance = bot
 
-@app.route('/health', methods=['GET'])
-def health_check():
-    """Health check endpoint"""
-    return jsonify({
-        'status': 'ok',
-        'bot_connected': bot_instance.is_ready() if hasattr(bot_instance, 'is_ready') else False
-    })
-
-@app.route('/api/guilds', methods=['GET'])
-def get_guilds():
-    """Get all guilds the bot is in"""
-    if not bot_instance.is_ready():
-        return jsonify({'error': 'Bot not ready'}), 503
-    
-    guilds_data = []
-    for guild in bot_instance.guilds:
-        guilds_data.append({
-            'id': str(guild.id),
-            'name': guild.name,
-            'icon_url': guild.icon.url if guild.icon else None,
-            'member_count': guild.member_count,
-            'bot_added': True
+    @app.route('/health', methods=['GET'])
+    def health_check():
+        """Health check endpoint"""
+        return jsonify({
+            'status': 'ok',
+            'bot_connected': bot_instance.is_ready() if hasattr(bot_instance, 'is_ready') else False
         })
-    
-    return jsonify(guilds_data)
 
-@app.route('/api/guild/<guild_id>/settings', methods=['GET'])
-def get_guild_settings(guild_id):
-    """Get current settings for a guild"""
-    if not bot_instance.is_ready():
-        return jsonify({'error': 'Bot not ready'}), 503
-    
-    guild = bot_instance.get_guild(int(guild_id))
-    if not guild:
-        return jsonify({'error': 'Guild not found'}), 404
-    
-    # Map bot settings to dashboard format
-    settings = {
-        'prefix': '/',
-        'language': 'ar',
-        'security_enabled': anti_nuke_enabled,
-        'logging_enabled': logs_enabled,
-        'log_channel_id': str(logs_channel_id) if logs_channel_id else None,
-        'message_logs': logs_enabled,
-        'member_logs': logs_enabled,
-        'ticketing_enabled': tickets_enabled,
-        'ticket_category_id': str(ticket_category_id) if ticket_category_id else None,
-        'welcome_enabled': False,
-        'welcome_channel_id': None,
-        'welcome_message': None,
-        'leave_message': None,
-        'leveling_enabled': auto_roles_enabled,
-        'xp_per_message': 15,
-        'level_roles': [{'role_id': rid, 'level': lvl} for rid, lvl in auto_roles.items()],
-        'ai_moderation_enabled': True,
-        'ai_filters': BAD_WORDS,
-        'ai_auto_delete': True,
-        'anti_spam': True,
-        'anti_raid': raid_detection_enabled,
-        'anti_raid_threshold': raid_threshold,
-        'auto_mod': True,
-        'max_mentions': 5,
-        'analytics_enabled': True,
-        'total_messages': 0,
-        'total_members': guild.member_count,
-        'dm_enabled': dm_enabled,
-        'dm_rate_limit_seconds': dm_rate_limit_seconds,
-        'dm_whitelist': list(dm_whitelist),
-        'dm_stats': dm_stats.get(guild.id, {'total': 0, 'success': 0, 'failed': 0})
-    }
-    
-    return jsonify(settings)
+    @app.route('/api/guilds', methods=['GET'])
+    def get_guilds():
+        """Get all guilds the bot is in"""
+        if not bot_instance.is_ready():
+            return jsonify({'error': 'Bot not ready'}), 503
+        
+        guilds_data = []
+        for guild in bot_instance.guilds:
+            guilds_data.append({
+                'id': str(guild.id),
+                'name': guild.name,
+                'icon_url': guild.icon.url if guild.icon else None,
+                'member_count': guild.member_count,
+                'bot_added': True
+            })
+        
+        return jsonify(guilds_data)
 
-@app.route('/api/guild/<guild_id>/settings', methods=['POST'])
-def update_guild_settings(guild_id):
-    """Update settings for a guild"""
-    if not bot_instance.is_ready():
-        return jsonify({'error': 'Bot not ready'}), 503
-    
-    guild = bot_instance.get_guild(int(guild_id))
-    if not guild:
-        return jsonify({'error': 'Guild not found'}), 404
-    
-    data = request.json
-    global anti_nuke_enabled, logs_enabled, logs_channel_id
-    global tickets_enabled, ticket_category_id
-    global auto_roles_enabled, auto_roles
-    global raid_detection_enabled, raid_threshold
-    global dm_enabled, dm_rate_limit_seconds, dm_whitelist, dm_stats
-    
-    # Update security settings
-    if 'security_enabled' in data:
-        anti_nuke_enabled = data['security_enabled']
-    if 'anti_raid' in data:
-        raid_detection_enabled = data['anti_raid']
-    if 'anti_raid_threshold' in data:
-        raid_threshold = data['anti_raid_threshold']
-    if 'anti_spam' in data:
-        # Anti-spam is always enabled in this bot
-        pass
-    if 'auto_mod' in data:
-        # Auto-mod is always enabled
-        pass
-    if 'max_mentions' in data:
-        # Max mentions is not configurable in current bot
-        pass
-    
-    # Update logging settings
-    if 'logging_enabled' in data:
-        logs_enabled = data['logging_enabled']
-    if 'log_channel_id' in data:
-        logs_channel_id = int(data['log_channel_id']) if data['log_channel_id'] else None
-    if 'message_logs' in data:
-        # Message logs tied to logging_enabled
-        pass
-    if 'member_logs' in data:
-        # Member logs tied to logging_enabled
-        pass
-    
-    # Update ticketing settings
-    if 'ticketing_enabled' in data:
-        tickets_enabled = data['ticketing_enabled']
-    if 'ticket_category_id' in data:
-        ticket_category_id = int(data['ticket_category_id']) if data['ticket_category_id'] else None
-    
-    # Update leveling/auto-roles settings
-    if 'leveling_enabled' in data:
-        auto_roles_enabled = data['leveling_enabled']
-    if 'level_roles' in data:
-        auto_roles = {int(lr['role_id']): lr['level'] for lr in data['level_roles']}
-    
-    # Update welcome settings (not implemented in bot yet)
-    if 'welcome_enabled' in data:
-        pass  # Would need to implement welcome system in bot
-    
-    # Update AI moderation settings
-    if 'ai_moderation_enabled' in data:
-        pass  # Bad word filter is always enabled
-    if 'ai_filters' in data:
-        global BAD_WORDS
-        BAD_WORDS = data['ai_filters']
-    
-    # Update DM settings
-    if 'dm_enabled' in data:
-        dm_enabled = data['dm_enabled']
-    if 'dm_rate_limit_seconds' in data:
-        dm_rate_limit_seconds = data['dm_rate_limit_seconds']
-    if 'dm_whitelist' in data:
-        dm_whitelist = set(data['dm_whitelist'])
-    
-    # Update general settings
-    if 'prefix' in data:
-        pass  # Prefix is hardcoded to /
-    if 'language' in data:
-        pass  # Language support not implemented
-    
-    return jsonify({'success': True})
-
-@app.route('/api/guild/<guild_id>/activity', methods=['GET'])
-def get_guild_activity(guild_id):
-    """Get recent activity logs for a guild"""
-    if not bot_instance.is_ready():
-        return jsonify({'error': 'Bot not ready'}), 503
-    
-    # Return mock activity data for now
-    # In a real implementation, you'd store activity logs in a database
-    activity = [
-        {
-            'id': '1',
-            'event_type': 'join',
-            'description': 'New member joined the server',
-            'created_at': datetime.now(timezone.utc).isoformat()
-        },
-        {
-            'id': '2',
-            'event_type': 'message',
-            'description': 'Message deleted by auto-mod',
-            'created_at': (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
-        },
-        {
-            'id': '3',
-            'event_type': 'ticket',
-            'description': 'Support ticket opened',
-            'created_at': (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    @app.route('/api/guild/<guild_id>/settings', methods=['GET'])
+    def get_guild_settings(guild_id):
+        """Get current settings for a guild"""
+        if not bot_instance.is_ready():
+            return jsonify({'error': 'Bot not ready'}), 503
+        
+        guild = bot_instance.get_guild(int(guild_id))
+        if not guild:
+            return jsonify({'error': 'Guild not found'}), 404
+        
+        # Map bot settings to dashboard format
+        settings = {
+            'prefix': '/',
+            'language': 'ar',
+            'security_enabled': anti_nuke_enabled,
+            'logging_enabled': logs_enabled,
+            'log_channel_id': str(logs_channel_id) if logs_channel_id else None,
+            'message_logs': logs_enabled,
+            'member_logs': logs_enabled,
+            'ticketing_enabled': tickets_enabled,
+            'ticket_category_id': str(ticket_category_id) if ticket_category_id else None,
+            'welcome_enabled': False,
+            'welcome_channel_id': None,
+            'welcome_message': None,
+            'leave_message': None,
+            'leveling_enabled': auto_roles_enabled,
+            'xp_per_message': 15,
+            'level_roles': [{'role_id': rid, 'level': lvl} for rid, lvl in auto_roles.items()],
+            'ai_moderation_enabled': True,
+            'ai_filters': BAD_WORDS,
+            'ai_auto_delete': True,
+            'anti_spam': True,
+            'anti_raid': raid_detection_enabled,
+            'anti_raid_threshold': raid_threshold,
+            'auto_mod': True,
+            'max_mentions': 5,
+            'analytics_enabled': True,
+            'total_messages': 0,
+            'total_members': guild.member_count,
+            'dm_enabled': dm_enabled,
+            'dm_rate_limit_seconds': dm_rate_limit_seconds,
+            'dm_whitelist': list(dm_whitelist),
+            'dm_stats': dm_stats.get(guild.id, {'total': 0, 'success': 0, 'failed': 0})
         }
-    ]
-    
-    return jsonify(activity)
-
-@app.route('/api/guild/<guild_id>/stats', methods=['GET'])
-def get_guild_stats(guild_id):
-    """Get statistics for a guild"""
-    if not bot_instance.is_ready():
-        return jsonify({'error': 'Bot not ready'}), 503
-    
-    guild = bot_instance.get_guild(int(guild_id))
-    if not guild:
-        return jsonify({'error': 'Guild not found'}), 404
-    
-    total_members = guild.member_count
-    online_members = sum(1 for m in guild.members if m.status != discord.Status.offline)
-    
-    stats = {
-        'total_members': total_members,
-        'online_members': online_members,
-        'text_channels': len(guild.text_channels),
-        'voice_channels': len(guild.voice_channels),
-        'roles': len(guild.roles),
-        'total_messages': 0  # Would need message tracking
-    }
-    
-    return jsonify(stats)
-
-@app.route('/api/guild/<guild_id>/dm/send', methods=['POST'])
-def send_dm_via_api(guild_id):
-    """Send DM to specific user or all members via API"""
-    if not bot_instance.is_ready():
-        return jsonify({'error': 'Bot not ready'}), 503
-    
-    if not dm_enabled:
-        return jsonify({'error': 'DM system is disabled'}), 400
-    
-    guild = bot_instance.get_guild(int(guild_id))
-    if not guild:
-        return jsonify({'error': 'Guild not found'}), 404
-    
-    data = request.json
-    message = data.get('message')
-    target_type = data.get('target_type', 'user')  # 'user' or 'all'
-    target_user_id = data.get('user_id')
-    use_embed = data.get('use_embed', False)
-    embed_title = data.get('embed_title')
-    embed_color = data.get('embed_color')
-    embed_description = data.get('embed_description')
-    
-    if not message:
-        return jsonify({'error': 'Message is required'}), 400
-    
-    success_count = 0
-    failed_count = 0
-    failed_users = []
-    
-    # Prepare message content
-    if use_embed:
-        embed = discord.Embed(
-            title=embed_title or 'رسالة من الإدارة',
-            description=embed_description or message,
-            color=discord.Color.blue() if not embed_color else discord.Color(int(embed_color.replace('#', ''), 16))
-        )
-        embed.set_footer(text=f'من: {guild.name}')
-        embed.timestamp = datetime.now(timezone.utc)
-    else:
-        embed = None
-    
-    async def send_dm_task():
-        nonlocal success_count, failed_count, failed_users
         
-        if target_type == 'all':
-            for member in guild.members:
-                if member.bot:
-                    continue
-                try:
-                    if embed:
-                        await member.send(embed=embed)
-                    else:
-                        await member.send(message)
-                    success_count += 1
-                    await asyncio.sleep(0.5)
-                except discord.Forbidden:
-                    failed_count += 1
-                    failed_users.append(f'{member.display_name} (DMs closed)')
-                except Exception as e:
-                    failed_count += 1
-                    failed_users.append(f'{member.display_name} ({str(e)[:50]})')
-        elif target_type == 'user' and target_user_id:
-            target_member = guild.get_member(int(target_user_id))
-            if target_member:
-                try:
-                    if embed:
-                        await target_member.send(embed=embed)
-                    else:
-                        await target_member.send(message)
-                    success_count += 1
-                except discord.Forbidden:
-                    failed_count += 1
-                    failed_users.append(f'{target_member.display_name} (DMs closed)')
-                except Exception as e:
-                    failed_count += 1
-                    failed_users.append(f'{target_member.display_name} ({str(e)[:50]})')
-            else:
-                failed_count += 1
-                failed_users.append(f'User {target_user_id} not found')
+        return jsonify(settings)
+
+    @app.route('/api/guild/<guild_id>/settings', methods=['POST'])
+    def update_guild_settings(guild_id):
+        """Update settings for a guild"""
+        if not bot_instance.is_ready():
+            return jsonify({'error': 'Bot not ready'}), 503
         
-        # Update stats
-        if guild.id not in dm_stats:
-            dm_stats[guild.id] = {'total': 0, 'success': 0, 'failed': 0}
-        dm_stats[guild.id]['total'] += success_count + failed_count
-        dm_stats[guild.id]['success'] += success_count
-        dm_stats[guild.id]['failed'] += failed_count
+        guild = bot_instance.get_guild(int(guild_id))
+        if not guild:
+            return jsonify({'error': 'Guild not found'}), 404
         
-        # Send log
-        await send_log(guild, '📨 DM Sent via API', f'تم إرسال رسالة خاصة عبر الـ API\nالنوع: {target_type}\nنجاح: {success_count}\nفشل: {failed_count}')
-    
-    # Run async task in event loop
-    import concurrent.futures
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        future = executor.submit(
-            asyncio.run_coroutine_threadsafe,
-            send_dm_task(),
-            bot_instance.loop
-        )
-        future.result()
-    
-    return jsonify({
-        'success': True,
-        'success_count': success_count,
-        'failed_count': failed_count,
-        'failed_users': failed_users[:10]  # Return first 10 failed users
-    })
+        data = request.json
+        global anti_nuke_enabled, logs_enabled, logs_channel_id
+        global tickets_enabled, ticket_category_id
+        global auto_roles_enabled, auto_roles
+        global raid_detection_enabled, raid_threshold
+        global dm_enabled, dm_rate_limit_seconds, dm_whitelist, dm_stats
+        
+        # Update security settings
+        if 'security_enabled' in data:
+            anti_nuke_enabled = data['security_enabled']
+        if 'anti_raid' in data:
+            raid_detection_enabled = data['anti_raid']
+        if 'anti_raid_threshold' in data:
+            raid_threshold = data['anti_raid_threshold']
+        if 'anti_spam' in data:
+            # Anti-spam is always enabled in this bot
+            pass
+        if 'auto_mod' in data:
+            # Auto-mod is always enabled
+            pass
+        if 'max_mentions' in data:
+            # Max mentions is not configurable in current bot
+            pass
+        
+        # Update logging settings
+        if 'logging_enabled' in data:
+            logs_enabled = data['logging_enabled']
+        if 'log_channel_id' in data:
+            logs_channel_id = int(data['log_channel_id']) if data['log_channel_id'] else None
+        if 'message_logs' in data:
+            # Message logs tied to logging_enabled
+            pass
+        if 'member_logs' in data:
+            # Member logs tied to logging_enabled
+            pass
+        
+        # Update ticketing settings
+        if 'ticketing_enabled' in data:
+            tickets_enabled = data['ticketing_enabled']
+        if 'ticket_category_id' in data:
+            ticket_category_id = int(data['ticket_category_id']) if data['ticket_category_id'] else None
+        
+        # Update leveling/auto-roles settings
+        if 'leveling_enabled' in data:
+            auto_roles_enabled = data['leveling_enabled']
+        if 'level_roles' in data:
+            auto_roles = {int(lr['role_id']): lr['level'] for lr in data['level_roles']}
+        
+        # Update welcome settings (not implemented in bot yet)
+        if 'welcome_enabled' in data:
+            pass  # Would need to implement welcome system in bot
+        
+        # Update AI moderation settings
+        if 'ai_moderation_enabled' in data:
+            pass  # Bad word filter is always enabled
+        if 'ai_filters' in data:
+            global BAD_WORDS
+            BAD_WORDS = data['ai_filters']
+        
+        # Update DM settings
+        if 'dm_enabled' in data:
+            dm_enabled = data['dm_enabled']
+        if 'dm_rate_limit_seconds' in data:
+            dm_rate_limit_seconds = data['dm_rate_limit_seconds']
+        if 'dm_whitelist' in data:
+            dm_whitelist = set(data['dm_whitelist'])
+        
+        # Update general settings
+        if 'prefix' in data:
+            pass  # Prefix is hardcoded to /
+        if 'language' in data:
+            pass  # Language support not implemented
+        
+        return jsonify({'success': True})
 
-@app.route('/api/guild/<guild_id>/dm/stats', methods=['GET'])
-def get_dm_stats_api(guild_id):
-    """Get DM statistics for a guild via API"""
-    if not bot_instance.is_ready():
-        return jsonify({'error': 'Bot not ready'}), 503
-    
-    guild = bot_instance.get_guild(int(guild_id))
-    if not guild:
-        return jsonify({'error': 'Guild not found'}), 404
-    
-    stats = dm_stats.get(guild.id, {'total': 0, 'success': 0, 'failed': 0})
-    
-    return jsonify({
-        'total': stats['total'],
-        'success': stats['success'],
-        'failed': stats['failed'],
-        'success_rate': (stats['success'] / stats['total'] * 100) if stats['total'] > 0 else 0
-    })
+    @app.route('/api/guild/<guild_id>/activity', methods=['GET'])
+    def get_guild_activity(guild_id):
+        """Get recent activity logs for a guild"""
+        if not bot_instance.is_ready():
+            return jsonify({'error': 'Bot not ready'}), 503
+        
+        # Return mock activity data for now
+        # In a real implementation, you'd store activity logs in a database
+        activity = [
+            {
+                'id': '1',
+                'event_type': 'join',
+                'description': 'New member joined the server',
+                'created_at': datetime.now(timezone.utc).isoformat()
+            },
+            {
+                'id': '2',
+                'event_type': 'message',
+                'description': 'Message deleted by auto-mod',
+                'created_at': (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+            },
+            {
+                'id': '3',
+                'event_type': 'ticket',
+                'description': 'Support ticket opened',
+                'created_at': (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+            }
+        ]
+        
+        return jsonify(activity)
 
-def run_flask():
-    """Run Flask server in separate thread"""
-    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
+    @app.route('/api/guild/<guild_id>/stats', methods=['GET'])
+    def get_guild_stats(guild_id):
+        """Get statistics for a guild"""
+        if not bot_instance.is_ready():
+            return jsonify({'error': 'Bot not ready'}), 503
+        
+        guild = bot_instance.get_guild(int(guild_id))
+        if not guild:
+            return jsonify({'error': 'Guild not found'}), 404
+        
+        total_members = guild.member_count
+        online_members = sum(1 for m in guild.members if m.status != discord.Status.offline)
+        
+        stats = {
+            'total_members': total_members,
+            'online_members': online_members,
+            'text_channels': len(guild.text_channels),
+            'voice_channels': len(guild.voice_channels),
+            'roles': len(guild.roles),
+            'total_messages': 0  # Would need message tracking
+        }
+        
+        return jsonify(stats)
 
-# Start Flask server in background thread
-flask_thread = threading.Thread(target=run_flask, daemon=True)
-flask_thread.start()
+    @app.route('/api/guild/<guild_id>/dm/send', methods=['POST'])
+    def send_dm_via_api(guild_id):
+        """Send DM to specific user or all members via API"""
+        if not bot_instance.is_ready():
+            return jsonify({'error': 'Bot not ready'}), 503
+        
+        if not dm_enabled:
+            return jsonify({'error': 'DM system is disabled'}), 400
+        
+        guild = bot_instance.get_guild(int(guild_id))
+        if not guild:
+            return jsonify({'error': 'Guild not found'}), 404
+        
+        data = request.json
+        message = data.get('message')
+        target_type = data.get('target_type', 'user')  # 'user' or 'all'
+        target_user_id = data.get('user_id')
+        use_embed = data.get('use_embed', False)
+        embed_title = data.get('embed_title')
+        embed_color = data.get('embed_color')
+        embed_description = data.get('embed_description')
+        
+        if not message:
+            return jsonify({'error': 'Message is required'}), 400
+        
+        success_count = 0
+        failed_count = 0
+        failed_users = []
+        
+        # Prepare message content
+        if use_embed:
+            embed = discord.Embed(
+                title=embed_title or 'رسالة من الإدارة',
+                description=embed_description or message,
+                color=discord.Color.blue() if not embed_color else discord.Color(int(embed_color.replace('#', ''), 16))
+            )
+            embed.set_footer(text=f'من: {guild.name}')
+            embed.timestamp = datetime.now(timezone.utc)
+        else:
+            embed = None
+        
+        async def send_dm_task():
+            nonlocal success_count, failed_count, failed_users
+            
+            if target_type == 'all':
+                for member in guild.members:
+                    if member.bot:
+                        continue
+                    try:
+                        if embed:
+                            await member.send(embed=embed)
+                        else:
+                            await member.send(message)
+                        success_count += 1
+                        await asyncio.sleep(0.5)
+                    except discord.Forbidden:
+                        failed_count += 1
+                        failed_users.append(f'{member.display_name} (DMs closed)')
+                    except Exception as e:
+                        failed_count += 1
+                        failed_users.append(f'{member.display_name} ({str(e)[:50]})')
+            elif target_type == 'user' and target_user_id:
+                target_member = guild.get_member(int(target_user_id))
+                if target_member:
+                    try:
+                        if embed:
+                            await target_member.send(embed=embed)
+                        else:
+                            await target_member.send(message)
+                        success_count += 1
+                    except discord.Forbidden:
+                        failed_count += 1
+                        failed_users.append(f'{target_member.display_name} (DMs closed)')
+                    except Exception as e:
+                        failed_count += 1
+                        failed_users.append(f'{target_member.display_name} ({str(e)[:50]})')
+                else:
+                    failed_count += 1
+                    failed_users.append(f'User {target_user_id} not found')
+            
+            # Update stats
+            if guild.id not in dm_stats:
+                dm_stats[guild.id] = {'total': 0, 'success': 0, 'failed': 0}
+            dm_stats[guild.id]['total'] += success_count + failed_count
+            dm_stats[guild.id]['success'] += success_count
+            dm_stats[guild.id]['failed'] += failed_count
+            
+            # Send log
+            await send_log(guild, '📨 DM Sent via API', f'تم إرسال رسالة خاصة عبر الـ API\nالنوع: {target_type}\nنجاح: {success_count}\nفشل: {failed_count}')
+        
+        # Run async task in event loop
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future = executor.submit(
+                asyncio.run_coroutine_threadsafe,
+                send_dm_task(),
+                bot_instance.loop
+            )
+            future.result()
+        
+        return jsonify({
+            'success': True,
+            'success_count': success_count,
+            'failed_count': failed_count,
+            'failed_users': failed_users[:10]  # Return first 10 failed users
+        })
+
+    @app.route('/api/guild/<guild_id>/dm/stats', methods=['GET'])
+    def get_dm_stats_api(guild_id):
+        """Get DM statistics for a guild via API"""
+        if not bot_instance.is_ready():
+            return jsonify({'error': 'Bot not ready'}), 503
+        
+        guild = bot_instance.get_guild(int(guild_id))
+        if not guild:
+            return jsonify({'error': 'Guild not found'}), 404
+        
+        stats = dm_stats.get(guild.id, {'total': 0, 'success': 0, 'failed': 0})
+        
+        return jsonify({
+            'total': stats['total'],
+            'success': stats['success'],
+            'failed': stats['failed'],
+            'success_rate': (stats['success'] / stats['total'] * 100) if stats['total'] > 0 else 0
+        })
+
+    def run_flask():
+        """Run Flask server in separate thread"""
+        app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
+
+    # Start Flask server in background thread
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    print("Flask API server started on port 5000")
 
 # تشغيل البوت باستخدام التوكن الخاص بك
 TOKEN = os.getenv('DISCORD_TOKEN')
