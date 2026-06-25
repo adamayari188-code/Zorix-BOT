@@ -937,7 +937,7 @@ async def dm_stats_command(interaction: discord.Interaction):
 
 @bot.tree.command(name='dm', description='تحكم في نظام الرسائل الخاصة')
 async def dm_admin_command(interaction: discord.Interaction, action: str = None, user_id: int = None):
-    """تحكم في نظام الرسائل الخاصة. الاستخدام: /dm enable/disable/whitelist/unwhitelist/resetstats"""
+    """تحكم في نظام الرسائل الخاصة. الاستخدام: /dm enable/disable/whitelist/unwhitelist/resetstats/clearall"""
     if not interaction.user.guild_permissions.administrator:
         await interaction.response.send_message('❌ ليس لديك صلاحيات إدارية.', ephemeral=True)
         return
@@ -959,6 +959,14 @@ async def dm_admin_command(interaction: discord.Interaction, action: str = None,
     elif action == 'resetstats':
         dm_stats[interaction.guild.id] = {'total': 0, 'success': 0, 'failed': 0}
         await interaction.response.send_message('🔄 تم إعادة تعيين إحصائيات الرسائل الخاصة.', ephemeral=True)
+    elif action == 'clearall':
+        # Clear all DM data for this guild
+        if interaction.guild.id in dm_stats:
+            del dm_stats[interaction.guild.id]
+        # Remove cooldown for the user in this guild context
+        if interaction.user.id in dm_cooldown:
+            del dm_cooldown[interaction.user.id]
+        await interaction.response.send_message('🗑️ تم حذف جميع بيانات الرسائل الخاصة (الإحصائيات + التوقيتات).', ephemeral=True)
     elif action == 'list':
         if dm_whitelist:
             await interaction.response.send_message(f'📋 القائمة البيضاء: {", ".join(map(str, dm_whitelist))}', ephemeral=True)
@@ -966,7 +974,7 @@ async def dm_admin_command(interaction: discord.Interaction, action: str = None,
             await interaction.response.send_message('📋 القائمة البيضاء فارغة.', ephemeral=True)
     else:
         status = 'مفعل' if dm_enabled else 'معطل'
-        await interaction.response.send_message(f'نظام الرسائل الخاصة: {status}\nالاستخدام: /dm enable/disable/whitelist/unwhitelist/resetstats/list [user_id]', ephemeral=True)
+        await interaction.response.send_message(f'نظام الرسائل الخاصة: {status}\nالاستخدام: /dm enable/disable/whitelist/unwhitelist/resetstats/clearall/list [user_id]', ephemeral=True)
 
 # ============= نظام التحكم (Dashboard Control) =============
 systems_status = {
