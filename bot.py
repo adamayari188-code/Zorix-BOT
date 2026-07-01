@@ -1027,6 +1027,23 @@ async def system_command(interaction: discord.Interaction, system_name: str = No
     else:
         await interaction.response.send_message('الاستخدام: /system [anti_nuke/logs/tickets/auto_roles/dm] [enable/disable/list]', ephemeral=True)
 
+# ============= نظام إرسال الرسائل =============
+@bot.tree.command(name='send', description='إرسال رسالة إلى قناة محددة')
+@app_commands.describe(channel='القناة المطلوب إرسال الرسالة إليها', message='الرسالة المطلوب إرسالها')
+async def send_message_command(interaction: discord.Interaction, channel: discord.TextChannel, message: str):
+    """إرسال رسالة إلى قناة محددة"""
+    if not interaction.user.guild_permissions.manage_messages:
+        await interaction.response.send_message('❌ ليس لديك صلاحيات إدارة الرسائل.', ephemeral=True)
+        return
+    
+    try:
+        await channel.send(message)
+        await interaction.response.send_message(f'✅ تم إرسال الرسالة إلى {channel.mention}', ephemeral=True)
+    except discord.Forbidden:
+        await interaction.response.send_message('❌ لا أمتلك صلاحية الإرسال في هذه القناة.', ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f'❌ حدث خطأ: {e}', ephemeral=True)
+
 # ============= نظام المساعدة =============
 @bot.tree.command(name='help', description='عرض جميع الخدمات والأوامر المتاحة')
 async def help_command(interaction: discord.Interaction):
@@ -1074,13 +1091,19 @@ async def help_command(interaction: discord.Interaction):
     )
     
     embed.add_field(
-        name='� نظام الرسائل الخاصة (DM System)',
+        name='💬 نظام الرسائل الخاصة (DM System)',
         value='إرسال رسائل جماعية أو فردية للأعضاء\nالأوامر: `/dmall`, `/dmuser`, `/dmstats`, `/dm`',
         inline=False
     )
     
     embed.add_field(
-        name='� الرد الذكي',
+        name='📤 إرسال الرسائل',
+        value='إرسال رسالة إلى قناة محددة\nالأمر: `/send`',
+        inline=False
+    )
+    
+    embed.add_field(
+        name='🤖 الرد الذكي',
         value='البوت يرد على أسئلتك باستخدام الذكاء الاصطناعي',
         inline=False
     )
