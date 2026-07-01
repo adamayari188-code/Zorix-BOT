@@ -1030,15 +1030,25 @@ async def system_command(interaction: discord.Interaction, system_name: str = No
 
 # ============= نظام إرسال الرسائل =============
 @bot.tree.command(name='send', description='إرسال رسالة إلى قناة محددة')
-@app_commands.describe(channel='القناة المطلوب إرسال الرسالة إليها', message='الرسالة المطلوب إرسالها')
-async def send_message_command(interaction: discord.Interaction, channel: discord.TextChannel, message: str):
+@app_commands.describe(channel='القناة المطلوب إرسال الرسالة إليها', message='الرسالة المطلوب إرسالها', use_embed='إرسال كـ Embed (منسق)', title='عنوان الـ Embed', color='لون الـ Embed (مثال: #FF0000)')
+async def send_message_command(interaction: discord.Interaction, channel: discord.TextChannel, message: str, use_embed: bool = False, title: str = None, color: str = None):
     """إرسال رسالة إلى قناة محددة"""
     if not interaction.user.guild_permissions.manage_messages:
         await interaction.response.send_message('❌ ليس لديك صلاحيات إدارة الرسائل.', ephemeral=True)
         return
     
     try:
-        await channel.send(message)
+        if use_embed:
+            embed = discord.Embed(
+                title=title or 'رسالة من الإدارة',
+                description=message,
+                color=discord.Color(int(color.replace('#', ''), 16)) if color else discord.Color.blue()
+            )
+            embed.set_footer(text=f'من: {interaction.user.display_name}')
+            embed.timestamp = datetime.now(timezone.utc)
+            await channel.send(embed=embed)
+        else:
+            await channel.send(message)
         await interaction.response.send_message(f'✅ تم إرسال الرسالة إلى {channel.mention}', ephemeral=True)
     except discord.Forbidden:
         await interaction.response.send_message('❌ لا أمتلك صلاحية الإرسال في هذه القناة.', ephemeral=True)
