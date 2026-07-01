@@ -1,19 +1,23 @@
 import discord
 from discord.ext import commands, tasks
-from discord import app_commands
 import os
 import sys
-import threading
 from dotenv import load_dotenv
 import asyncio
 import aiohttp
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 import re
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-from settings_manager import get_settings, update_settings
-from db import add_audit_log, get_audit_logs
+
+# Optional Flask import for dashboard API
+try:
+    from flask import Flask, request, jsonify
+    from flask_cors import CORS
+    import threading
+    FLASK_AVAILABLE = True
+except ImportError:
+    FLASK_AVAILABLE = False
+    print("Flask not installed. Dashboard API features will be disabled.")
 
 load_dotenv() # حمل المتغيرات من ملف .env
 
@@ -31,7 +35,7 @@ bot = commands.Bot(command_prefix='/', intents=intents, help_command=None)
 
 # إعدادات بسيطة لمكافحة تكرار الرسائل (سبام)
 SPAM_WINDOW_SECONDS = 20  # نافذة فحص التكرار
-SPAM_TIMEOUT_STEPS_MINUTES = [10, 20, 40, 80, 160, 320, 640, 1280]  # العقوبات التصاعدية بالدقائق (تبدأ من 10 وتتضاعف)
+SPAM_TIMEOUT_STEPS_MINUTES = [1, 5, 15, 60]  # العقوبات التصاعدية بالدقائق
 _recent_message_cache = {}  # آخر رسالة لكل عضو داخل السيرفر
 _spam_offense_counts = defaultdict(int)  # عدد مرات المخالفة لكل عضو
 
@@ -399,40 +403,22 @@ async def on_message(message):
             if prev_content == normalized_content and (now - prev_time).total_seconds() <= SPAM_WINDOW_SECONDS:
                 _spam_offense_counts[key] += 1
                 offense_count = _spam_offense_counts[key]
-                
-                # التحقق إذا كان العضو لديه رتبة من قائمة الحظر التلقائي
-                member_role_ids = {role.id for role in member.roles}
-                has_spam_ban_role = bool(member_role_ids & spam_ban_roles)
-                
-                if has_spam_ban_role:
-                    # حظر العضو نهائيًا
-                    try:
-                        await member.ban(reason=f"Automatic ban for spam in restricted role (offense #{offense_count}).")
-                        await message.channel.send(
-                            f'{member.mention} تم حظرك نهائيًا بسبب السبام في رتبة محدودة.'
-                        )
-                    except discord.Forbidden:
-                        print(f'لا أمتلك صلاحية حظر العضو {member.display_name} في السيرفر {message.guild.name}.')
-                    except Exception as e:
-                        print(f'حدث خطأ أثناء حظر العضو {member.display_name}: {e}')
-                else:
-                    # السلوك العادي: تايم أوت
-                    step_index = min(offense_count - 1, len(SPAM_TIMEOUT_STEPS_MINUTES) - 1)
-                    timeout_minutes = SPAM_TIMEOUT_STEPS_MINUTES[step_index]
-                    until = now + timedelta(minutes=timeout_minutes)
+                step_index = min(offense_count - 1, len(SPAM_TIMEOUT_STEPS_MINUTES) - 1)
+                timeout_minutes = SPAM_TIMEOUT_STEPS_MINUTES[step_index]
+                until = now + timedelta(minutes=timeout_minutes)
 
-                    try:
-                        await member.timeout(
-                            until,
-                            reason=f"Duplicate message spam detected (offense #{offense_count}).",
-                        )
-                        await message.channel.send(
-                            f'{member.mention} تم إعطاؤك تايم أوت لمدة {timeout_minutes} دقيقة بسبب تكرار الرسائل.'
-                        )
-                    except discord.Forbidden:
-                        print(f'لا أمتلك صلاحية إعطاء تايم أوت للعضو {member.display_name} في السيرفر {message.guild.name}.')
-                    except Exception as e:
-                        print(f'حدث خطأ أثناء إعطاء تايم أوت للعضو {member.display_name}: {e}')
+                try:
+                    await member.timeout(
+                        until,
+                        reason=f"Duplicate message spam detected (offense #{offense_count}).",
+                    )
+                    await message.channel.send(
+                        f'{member.mention} تم إعطاؤك تايم أوت لمدة {timeout_minutes} دقيقة بسبب تكرار الرسائل.'
+                    )
+                except discord.Forbidden:
+                    print(f'لا أمتلك صلاحية إعطاء تايم أوت للعضو {member.display_name} في السيرفر {message.guild.name}.')
+                except Exception as e:
+                    print(f'حدث خطأ أثناء إعطاء تايم أوت للعضو {member.display_name}: {e}')
 
     await bot.process_commands(message)
 
@@ -472,9 +458,6 @@ raid_threshold = 5 # عدد الأعضاء في فترة زمنية قصيرة
 raid_window_seconds = 10
 raid_joined_cache = []
 lockdown_mode = False
-
-# ============= نظام الحظر التلقائي للسبام في رتب محددة =============
-spam_ban_roles = set() # معرفات الرتب التي يتم فيها الحظر تلقائيًا عند السبام
 
 @bot.tree.command(name='antinuke', description='تحكم في نظام الحماية')
 async def antinuke_command(interaction: discord.Interaction, action: str = None, user_id: int = None):
@@ -524,35 +507,6 @@ async def lockdown_command(interaction: discord.Interaction, action: str = None)
         status = 'مفعل' if lockdown_mode else 'معطل'
         await interaction.response.send_message(f'وضع الطوارئ: {status}', ephemeral=True)
 
-@bot.tree.command(name='spamban', description='تحكم في رتب الحظر التلقائي للسبام')
-@app_commands.describe(action='الإجراء: add/remove/list', role='الرتبة المراد إضافتها/إزالتها')
-async def spamban_command(interaction: discord.Interaction, action: str, role: discord.Role = None):
-    """تحكم في رتب الحظر التلقائي للسبام. الاستخدام: /spamban add/remove/list [@role]"""
-    if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message('❌ ليس لديك صلاحيات إدارية.', ephemeral=True)
-        return
-    
-    global spam_ban_roles
-    
-    if action == 'add' and role:
-        spam_ban_roles.add(role.id)
-        await interaction.response.send_message(f'✅ تم إضافة الرتبة {role.name} لقائمة الحظر التلقائي للسبام.', ephemeral=True)
-    elif action == 'remove' and role:
-        spam_ban_roles.discard(role.id)
-        await interaction.response.send_message(f'❌ تم إزالة الرتبة {role.name} من قائمة الحظر التلقائي للسبام.', ephemeral=True)
-    elif action == 'list':
-        if spam_ban_roles:
-            role_names = []
-            for role_id in spam_ban_roles:
-                r = interaction.guild.get_role(role_id)
-                if r:
-                    role_names.append(r.name)
-            await interaction.response.send_message(f'📋 رتب الحظر التلقائي للسبام:\n' + '\n'.join(role_names), ephemeral=True)
-        else:
-            await interaction.response.send_message('📋 لا توجد رتب في قائمة الحظر التلقائي للسبام.', ephemeral=True)
-    else:
-        await interaction.response.send_message('الاستخدام: /spamban add/remove/list [@role]', ephemeral=True)
-
 # ============= نظام اللوق (Logs System) =============
 logs_enabled = True
 logs_channel_id = None
@@ -599,40 +553,6 @@ async def send_log(guild, action, details):
 tickets_enabled = True
 ticket_category_id = None
 ticket_counter = 0
-
-# ============= نظام الترحيب (Welcome System) =============
-welcome_enabled = True
-welcome_channel_id = None
-welcome_message = 'أهلاً وسهلاً {member.mention} في السيرفر! نتمنى لك وقتاً ممتعاً معنا 🎉'
-
-@bot.tree.command(name='welcome', description='تحكم في نظام الترحيب')
-async def welcome_command(interaction: discord.Interaction, action: str = None, channel: discord.TextChannel = None, message: str = None):
-    """تحكم في نظام الترحيب. الاستخدام: /welcome enable/disable/setchannel/setmessage [channel] [message]"""
-    if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message('❌ ليس لديك صلاحيات إدارية.', ephemeral=True)
-        return
-    
-    global welcome_enabled, welcome_channel_id, welcome_message
-    
-    if action == 'enable':
-        welcome_enabled = True
-        await interaction.response.send_message('✅ تم تفعيل نظام الترحيب.', ephemeral=True)
-    elif action == 'disable':
-        welcome_enabled = False
-        await interaction.response.send_message('❌ تم تعطيل نظام الترحيب.', ephemeral=True)
-    elif action == 'setchannel' and channel:
-        welcome_channel_id = channel.id
-        await interaction.response.send_message(f'✅ تم ضبط قناة الترحيب إلى: {channel.mention}', ephemeral=True)
-    elif action == 'setmessage' and message:
-        welcome_message = message
-        await interaction.response.send_message('✅ تم تحديث رسالة الترحيب.', ephemeral=True)
-    else:
-        status = 'مفعل' if welcome_enabled else 'معطل'
-        channel_mention = f'<#{welcome_channel_id}>' if welcome_channel_id else 'غير محدد'
-        await interaction.response.send_message(
-            f'نظام الترحيب: {status}\nقناة الترحيب: {channel_mention}\nالرسالة: {welcome_message}',
-            ephemeral=True
-        )
 
 @bot.tree.command(name='ticket', description='إنشاء تذكرة جديدة')
 async def ticket_command(interaction: discord.Interaction):
@@ -790,12 +710,279 @@ async def stats_command(interaction: discord.Interaction):
     
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
+# ============= نظام الرسائل الخاصة (DM System) =============
+dm_enabled = True
+dm_cooldown = {}  # {user_id: last_dm_time}
+dm_rate_limit_seconds = 300  # 5 minutes between mass DMs
+dm_whitelist = set()  # Users allowed to bypass rate limits
+dm_stats = {}  # {guild_id: {'total': 0, 'success': 0, 'failed': 0}}
+
+def can_send_dm(user_id: int) -> tuple[bool, str]:
+    """Check if user can send DM based on rate limiting"""
+    if user_id in dm_whitelist:
+        return True, ""
+    
+    if user_id in dm_cooldown:
+        last_time = dm_cooldown[user_id]
+        elapsed = (datetime.now(timezone.utc) - last_time).total_seconds()
+        if elapsed < dm_rate_limit_seconds:
+            remaining = int(dm_rate_limit_seconds - elapsed)
+            return False, f"يجب الانتظار {remaining} ثانية قبل إرسال رسائل جماعية جديدة."
+    
+    return True, ""
+
+@bot.tree.command(name='dmall', description='إرسال رسالة خاصة لجميع أعضاء السيرفر')
+async def dm_all_command(
+    interaction: discord.Interaction,
+    message: str,
+    use_embed: bool = False,
+    embed_title: str = None,
+    embed_color: str = None,
+    embed_description: str = None
+):
+    """إرسال رسالة خاصة لجميع أعضاء السيرفر"""
+    if not dm_enabled:
+        await interaction.response.send_message('❌ نظام الرسائل الخاصة معطل.', ephemeral=True)
+        return
+    
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message('❌ ليس لديك صلاحيات إدارية.', ephemeral=True)
+        return
+    
+    # Rate limit check
+    can_send, error_msg = can_send_dm(interaction.user.id)
+    if not can_send:
+        await interaction.response.send_message(f'⏱️ {error_msg}', ephemeral=True)
+        return
+    
+    await interaction.response.defer(ephemeral=True)
+    
+    guild = interaction.guild
+    success_count = 0
+    failed_count = 0
+    failed_users = []
+    
+    # Prepare message content
+    if use_embed:
+        embed = discord.Embed(
+            title=embed_title or 'رسالة من الإدارة',
+            description=embed_description or message,
+            color=discord.Color.blue() if not embed_color else discord.Color(int(embed_color.replace('#', ''), 16))
+        )
+        embed.set_footer(text=f'من: {guild.name}')
+        embed.timestamp = datetime.now(timezone.utc)
+    else:
+        embed = None
+    
+    # Send DM to all members
+    for member in guild.members:
+        if member.bot:
+            continue
+        
+        try:
+            if embed:
+                await member.send(embed=embed)
+            else:
+                await member.send(message)
+            success_count += 1
+            await asyncio.sleep(0.5)  # Rate limit to avoid hitting Discord API limits
+        except discord.Forbidden:
+            failed_count += 1
+            failed_users.append(f'{member.display_name} (DMs closed)')
+        except Exception as e:
+            failed_count += 1
+            failed_users.append(f'{member.display_name} ({str(e)[:50]})')
+    
+    #Update cooldown
+    dm_cooldown[interaction.user.id] = datetime.now(timezone.utc)
+    
+    # Update stats
+    if guild.id not in dm_stats:
+        dm_stats[guild.id] = {'total': 0, 'success': 0, 'failed': 0}
+    dm_stats[guild.id]['total'] += success_count + failed_count
+    dm_stats[guild.id]['success'] += success_count
+    dm_stats[guild.id]['failed'] += failed_count
+    
+    # Send log
+    await send_log(guild, '📨 Mass DM Sent', f'تم إرسال رسالة جماعية بواسطة {interaction.user}\nنجاح: {success_count}\nفشل: {failed_count}')
+    
+    # Send results
+    result_embed = discord.Embed(
+        title='📊 إحصائيات إرسال الرسائل',
+        color=discord.Color.green()
+    )
+    result_embed.add_field(name='✅ تم الإرسال بنجاح', value=str(success_count), inline=True)
+    result_embed.add_field(name='❌ فشل الإرسال', value=str(failed_count), inline=True)
+    result_embed.add_field(name='👥 إجمالي الأعضاء', value=str(success_count + failed_count), inline=True)
+    
+    if failed_users and len(failed_users) <= 10:
+        result_embed.add_field(name='📋 قائمة الفشل', value='\n'.join(failed_users[:10]), inline=False)
+    elif failed_users:
+        result_embed.add_field(name='📋 قائمة الفشل', value=f'{len(failed_users)} عضو (عرض أول 10)\n' + '\n'.join(failed_users[:10]), inline=False)
+    
+    await interaction.followup.send(embed=result_embed, ephemeral=True)
+
+@bot.tree.command(name='dmuser', description='إرسال رسالة خاصة لعضو محدد')
+async def dm_user_command(
+    interaction: discord.Interaction,
+    user: str,
+    message: str,
+    use_embed: bool = False,
+    embed_title: str = None,
+    embed_color: str = None,
+    embed_description: str = None
+):
+    """إرسال رسالة خاصة لعضو محدد (بالـ ID أو المنشن)"""
+    if not dm_enabled:
+        await interaction.response.send_message('❌ نظام الرسائل الخاصة معطل.', ephemeral=True)
+        return
+    
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message('❌ ليس لديك صلاحيات إدارية.', ephemeral=True)
+        return
+    
+    await interaction.response.defer(ephemeral=True)
+    
+    guild = interaction.guild
+    
+    # Try to get user by mention or ID
+    target_member = None
+    try:
+        # Check if it's a mention
+        if user.startswith('<@') and user.endswith('>'):
+            user_id = int(user.strip('<@!>'))
+            target_member = guild.get_member(user_id)
+        else:
+            # Try as ID
+            user_id = int(user)
+            target_member = guild.get_member(user_id)
+    except ValueError:
+        pass
+    
+    if not target_member:
+        await interaction.followup.send('❌ لم أتمكن من العثور على العضو. تأكد من الـ ID أو المنشن الصحيح.', ephemeral=True)
+        return
+    
+    # Prepare message content
+    if use_embed:
+        embed = discord.Embed(
+            title=embed_title or 'رسالة من الإدارة',
+            description=embed_description or message,
+            color=discord.Color.blue() if not embed_color else discord.Color(int(embed_color.replace('#', ''), 16))
+        )
+        embed.set_footer(text=f'من: {guild.name}')
+        embed.timestamp = datetime.now(timezone.utc)
+    else:
+        embed = None
+    
+    # Send DM
+    try:
+        if embed:
+            await target_member.send(embed=embed)
+        else:
+            await target_member.send(message)
+        
+        # Update stats
+        if guild.id not in dm_stats:
+            dm_stats[guild.id] = {'total': 0, 'success': 0, 'failed': 0}
+        dm_stats[guild.id]['total'] += 1
+        dm_stats[guild.id]['success'] += 1
+        
+        # Send log
+        await send_log(guild, '📨 DM Sent', f'تم إرسال رسالة خاصة لـ {target_member} بواسطة {interaction.user}')
+        
+        await interaction.followup.send(f'✅ تم إرسال الرسالة بنجاح إلى {target_member.mention}', ephemeral=True)
+    except discord.Forbidden:
+        # Update stats
+        if guild.id not in dm_stats:
+            dm_stats[guild.id] = {'total': 0, 'success': 0, 'failed': 0}
+        dm_stats[guild.id]['total'] += 1
+        dm_stats[guild.id]['failed'] += 1
+        
+        await interaction.followup.send(f'❌ فشل الإرسال: {target_member.mention} أغلق رسائله الخاصة.', ephemeral=True)
+    except Exception as e:
+        # Update stats
+        if guild.id not in dm_stats:
+            dm_stats[guild.id] = {'total': 0, 'success': 0, 'failed': 0}
+        dm_stats[guild.id]['total'] += 1
+        dm_stats[guild.id]['failed'] += 1
+        
+        await interaction.followup.send(f'❌ فشل الإرسال: {str(e)}', ephemeral=True)
+
+@bot.tree.command(name='dmstats', description='عرض إحصائيات الرسائل الخاصة')
+async def dm_stats_command(interaction: discord.Interaction):
+    """عرض إحصائيات الرسائل الخاصة"""
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message('❌ ليس لديك صلاحيات إدارية.', ephemeral=True)
+        return
+    
+    guild = interaction.guild
+    stats = dm_stats.get(guild.id, {'total': 0, 'success': 0, 'failed': 0})
+    
+    embed = discord.Embed(
+        title=f'📊 إحصائيات الرسائل الخاصة - {guild.name}',
+        color=discord.Color.blue()
+    )
+    embed.add_field(name='📨 إجمالي المحاولات', value=str(stats['total']), inline=True)
+    embed.add_field(name='✅ نجاح', value=str(stats['success']), inline=True)
+    embed.add_field(name='❌ فشل', value=str(stats['failed']), inline=True)
+    
+    success_rate = (stats['success'] / stats['total'] * 100) if stats['total'] > 0 else 0
+    embed.add_field(name='📈 نسبة النجاح', value=f'{success_rate:.1f}%', inline=False)
+    
+    embed.set_footer(text=f'السيرفر: {guild.name}')
+    embed.timestamp = datetime.now(timezone.utc)
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name='dm', description='تحكم في نظام الرسائل الخاصة')
+async def dm_admin_command(interaction: discord.Interaction, action: str = None, user_id: int = None):
+    """تحكم في نظام الرسائل الخاصة. الاستخدام: /dm enable/disable/whitelist/unwhitelist/resetstats/clearall"""
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message('❌ ليس لديك صلاحيات إدارية.', ephemeral=True)
+        return
+    
+    global dm_enabled, dm_whitelist, dm_stats
+    
+    if action == 'enable':
+        dm_enabled = True
+        await interaction.response.send_message('✅ تم تفعيل نظام الرسائل الخاصة.', ephemeral=True)
+    elif action == 'disable':
+        dm_enabled = False
+        await interaction.response.send_message('❌ تم تعطيل نظام الرسائل الخاصة.', ephemeral=True)
+    elif action == 'whitelist' and user_id:
+        dm_whitelist.add(user_id)
+        await interaction.response.send_message(f'✅ تم إضافة {user_id} إلى القائمة البيضاء (يمكنه تجاهل الحد الزمني).', ephemeral=True)
+    elif action == 'unwhitelist' and user_id:
+        dm_whitelist.discard(user_id)
+        await interaction.response.send_message(f'❌ تم إزالة {user_id} من القائمة البيضاء.', ephemeral=True)
+    elif action == 'resetstats':
+        dm_stats[interaction.guild.id] = {'total': 0, 'success': 0, 'failed': 0}
+        await interaction.response.send_message('🔄 تم إعادة تعيين إحصائيات الرسائل الخاصة.', ephemeral=True)
+    elif action == 'clearall':
+        # Clear all DM data for this guild
+        if interaction.guild.id in dm_stats:
+            del dm_stats[interaction.guild.id]
+        # Remove cooldown for the user in this guild context
+        if interaction.user.id in dm_cooldown:
+            del dm_cooldown[interaction.user.id]
+        await interaction.response.send_message('🗑️ تم حذف جميع بيانات الرسائل الخاصة (الإحصائيات + التوقيتات).', ephemeral=True)
+    elif action == 'list':
+        if dm_whitelist:
+            await interaction.response.send_message(f'📋 القائمة البيضاء: {", ".join(map(str, dm_whitelist))}', ephemeral=True)
+        else:
+            await interaction.response.send_message('📋 القائمة البيضاء فارغة.', ephemeral=True)
+    else:
+        status = 'مفعل' if dm_enabled else 'معطل'
+        await interaction.response.send_message(f'نظام الرسائل الخاصة: {status}\nالاستخدام: /dm enable/disable/whitelist/unwhitelist/resetstats/clearall/list [user_id]', ephemeral=True)
+
 # ============= نظام التحكم (Dashboard Control) =============
 systems_status = {
     'anti_nuke': anti_nuke_enabled,
     'logs': logs_enabled,
     'tickets': tickets_enabled,
     'auto_roles': auto_roles_enabled,
+    'dm': dm_enabled,
 }
 
 @bot.tree.command(name='system', description='تحكم في الأنظمة')
@@ -805,7 +992,7 @@ async def system_command(interaction: discord.Interaction, system_name: str = No
         await interaction.response.send_message('❌ ليس لديك صلاحيات إدارية.', ephemeral=True)
         return
     
-    global systems_status, anti_nuke_enabled, logs_enabled, tickets_enabled, auto_roles_enabled
+    global systems_status, anti_nuke_enabled, logs_enabled, tickets_enabled, auto_roles_enabled, dm_enabled
     
     if system_name == 'list' or not system_name:
         status_text = '\n'.join([f'✅ {name}: {"مفعل" if status else "معطل"}' for name, status in systems_status.items()])
@@ -821,6 +1008,8 @@ async def system_command(interaction: discord.Interaction, system_name: str = No
                 tickets_enabled = True
             elif system_name == 'auto_roles':
                 auto_roles_enabled = True
+            elif system_name == 'dm':
+                dm_enabled = True
             await interaction.response.send_message(f'✅ تم تفعيل نظام {system_name}.', ephemeral=True)
         elif action == 'disable':
             systems_status[system_name] = False
@@ -832,26 +1021,11 @@ async def system_command(interaction: discord.Interaction, system_name: str = No
                 tickets_enabled = False
             elif system_name == 'auto_roles':
                 auto_roles_enabled = False
+            elif system_name == 'dm':
+                dm_enabled = False
             await interaction.response.send_message(f'❌ تم تعطيل نظام {system_name}.', ephemeral=True)
     else:
-        await interaction.response.send_message('الاستخدام: /system [anti_nuke/logs/tickets/auto_roles] [enable/disable/list]', ephemeral=True)
-
-# ============= نظام إرسال الرسائل =============
-@bot.tree.command(name='send', description='إرسال رسالة إلى قناة محددة')
-@app_commands.describe(channel='القناة المطلوب إرسال الرسالة إليها', message='الرسالة المطلوب إرسالها')
-async def send_message_command(interaction: discord.Interaction, channel: discord.TextChannel, message: str):
-    """إرسال رسالة إلى قناة محددة"""
-    if not interaction.user.guild_permissions.manage_messages:
-        await interaction.response.send_message('❌ ليس لديك صلاحيات إدارة الرسائل.', ephemeral=True)
-        return
-    
-    try:
-        await channel.send(message)
-        await interaction.response.send_message(f'✅ تم إرسال الرسالة إلى {channel.mention}', ephemeral=True)
-    except discord.Forbidden:
-        await interaction.response.send_message('❌ لا أمتلك صلاحية الإرسال في هذه القناة.', ephemeral=True)
-    except Exception as e:
-        await interaction.response.send_message(f'❌ حدث خطأ: {e}', ephemeral=True)
+        await interaction.response.send_message('الاستخدام: /system [anti_nuke/logs/tickets/auto_roles/dm] [enable/disable/list]', ephemeral=True)
 
 # ============= نظام المساعدة =============
 @bot.tree.command(name='help', description='عرض جميع الخدمات والأوامر المتاحة')
@@ -870,13 +1044,7 @@ async def help_command(interaction: discord.Interaction):
     )
     
     embed.add_field(
-        name='� نظام الحظر التلقائي للسبام (Spam Ban)',
-        value='حظر تلقائي للأعضاء الذين يسبام في رتب محددة\nالأمر: `/spamban`',
-        inline=False
-    )
-    
-    embed.add_field(
-        name='�📜 نظام اللوق (Logs System)',
+        name='📜 نظام اللوق (Logs System)',
         value='تسجيل جميع الأحداث في قناة مخصصة\nالأمر: `/logs`',
         inline=False
     )
@@ -884,12 +1052,6 @@ async def help_command(interaction: discord.Interaction):
     embed.add_field(
         name='🎫 نظام التذاكر (Tickets)',
         value='إنشاء تذاكر دعم، إغلاق، إضافة/إزالة أعضاء\nالأوامر: `/ticket`, `/close`, `/add`, `/remove`',
-        inline=False
-    )
-    
-    embed.add_field(
-        name='👋 نظام الترحيب (Welcome System)',
-        value='رسالة ترحيب تلقائية للأعضاء الجدد\nالأمر: `/welcome`',
         inline=False
     )
     
@@ -912,13 +1074,13 @@ async def help_command(interaction: discord.Interaction):
     )
     
     embed.add_field(
-        name='� إرسال الرسائل',
-        value='إرسال رسالة إلى قناة محددة\nالأمر: `/send`',
+        name='� نظام الرسائل الخاصة (DM System)',
+        value='إرسال رسائل جماعية أو فردية للأعضاء\nالأوامر: `/dmall`, `/dmuser`, `/dmstats`, `/dm`',
         inline=False
     )
     
     embed.add_field(
-        name='�💬 الرد الذكي',
+        name='� الرد الذكي',
         value='البوت يرد على أسئلتك باستخدام الذكاء الاصطناعي',
         inline=False
     )
@@ -973,16 +1135,6 @@ async def on_member_join(member):
     
     await send_log(member.guild, '👋 Member Joined', f'انضم العضو: {member} ({member.id})')
     
-    # إرسال رسالة الترحيب
-    if welcome_enabled and welcome_channel_id:
-        welcome_channel = member.guild.get_channel(welcome_channel_id)
-        if welcome_channel:
-            try:
-                formatted_message = welcome_message.format(member=member, guild=member.guild)
-                await welcome_channel.send(formatted_message)
-            except Exception as e:
-                print(f'حدث خطأ أثناء إرسال رسالة الترحيب: {e}')
-    
     # إعطاء الرتب التلقائية
     if auto_roles_enabled and auto_roles:
         for role_id, level in auto_roles.items():
@@ -993,203 +1145,360 @@ async def on_member_join(member):
 
 
 # ============= Flask API Server for Dashboard Integration =============
-app = Flask(__name__)
-CORS(app)
+if FLASK_AVAILABLE:
+    app = Flask(__name__)
+    CORS(app)
 
-# Store bot instance for API access
-bot_instance = bot
+    # Store bot instance for API access
+    bot_instance = bot
 
-@app.route('/health', methods=['GET'])
-def health_check():
-    """Health check endpoint"""
-    return jsonify({
-        'status': 'ok',
-        'bot_connected': bot_instance.is_ready() if hasattr(bot_instance, 'is_ready') else False
-    })
-
-@app.route('/api/guilds', methods=['GET'])
-def get_guilds():
-    """Get all guilds the bot is in"""
-    if not bot_instance.is_ready():
-        return jsonify({'error': 'Bot not ready'}), 503
-    
-    guilds_data = []
-    for guild in bot_instance.guilds:
-        guilds_data.append({
-            'id': str(guild.id),
-            'name': guild.name,
-            'icon_url': guild.icon.url if guild.icon else None,
-            'member_count': guild.member_count,
-            'bot_added': True
+    @app.route('/health', methods=['GET'])
+    def health_check():
+        """Health check endpoint"""
+        return jsonify({
+            'status': 'ok',
+            'bot_connected': bot_instance.is_ready() if hasattr(bot_instance, 'is_ready') else False
         })
-    
-    return jsonify(guilds_data)
 
-@app.route('/api/guild/<guild_id>/settings', methods=['GET'])
-def get_guild_settings(guild_id):
-    """Get current settings for a guild"""
-    if not bot_instance.is_ready():
-        return jsonify({'error': 'Bot not ready'}), 503
-    
-    guild = bot_instance.get_guild(int(guild_id))
-    if not guild:
-        return jsonify({'error': 'Guild not found'}), 404
-    
-    gid = int(guild_id)
-    cfg = get_settings(gid)
+    @app.route('/api/guilds', methods=['GET'])
+    def get_guilds():
+        """Get all guilds the bot is in"""
+        if not bot_instance.is_ready():
+            return jsonify({'error': 'Bot not ready'}), 503
+        
+        guilds_data = []
+        for guild in bot_instance.guilds:
+            guilds_data.append({
+                'id': str(guild.id),
+                'name': guild.name,
+                'icon_url': guild.icon.url if guild.icon else None,
+                'member_count': guild.member_count,
+                'bot_added': True
+            })
+        
+        return jsonify(guilds_data)
 
-    settings = {
-        'prefix': '/',
-        'language': 'ar',
-        'security_enabled': cfg.get('anti_nuke_enabled', anti_nuke_enabled),
-        'logging_enabled': cfg.get('logs_enabled', logs_enabled),
-        'log_channel_id': str(cfg['logs_channel_id']) if cfg.get('logs_channel_id') else None,
-        'message_logs': cfg.get('logs_enabled', logs_enabled),
-        'member_logs': cfg.get('logs_enabled', logs_enabled),
-        'ticketing_enabled': cfg.get('tickets_enabled', tickets_enabled),
-        'ticket_category_id': str(cfg['ticket_category_id']) if cfg.get('ticket_category_id') else None,
-        'welcome_enabled': cfg.get('welcome_enabled', welcome_enabled),
-        'welcome_channel_id': str(cfg['welcome_channel_id']) if cfg.get('welcome_channel_id') else None,
-        'welcome_message': cfg.get('welcome_message', welcome_message),
-        'leave_message': None,
-        'leveling_enabled': cfg.get('auto_roles_enabled', auto_roles_enabled),
-        'xp_per_message': 15,
-        'level_roles': [{'role_id': str(rid), 'level': lvl} for rid, lvl in (cfg.get('auto_roles') or {}).items()],
-        'ai_moderation_enabled': True,
-        'ai_filters': cfg.get('bad_words') or BAD_WORDS,
-        'ai_auto_delete': True,
-        'anti_spam': True,
-        'anti_raid': cfg.get('raid_detection_enabled', raid_detection_enabled),
-        'anti_raid_threshold': cfg.get('raid_threshold', raid_threshold),
-        'auto_mod': True,
-        'max_mentions': cfg.get('max_mentions', 5),
-        'analytics_enabled': True,
-        'total_messages': 0,
-        'total_members': guild.member_count
-    }
-    
-    return jsonify(settings)
-
-@app.route('/api/guild/<guild_id>/settings', methods=['POST'])
-def update_guild_settings(guild_id):
-    """Update settings for a guild"""
-    if not bot_instance.is_ready():
-        return jsonify({'error': 'Bot not ready'}), 503
-    
-    guild = bot_instance.get_guild(int(guild_id))
-    if not guild:
-        return jsonify({'error': 'Guild not found'}), 404
-    
-    gid = int(guild_id)
-    data = request.json or {}
-    updates = {}
-    global anti_nuke_enabled, logs_enabled, logs_channel_id
-    global tickets_enabled, ticket_category_id
-    global auto_roles_enabled, auto_roles
-    global raid_detection_enabled, raid_threshold
-    global welcome_enabled, welcome_channel_id, welcome_message, BAD_WORDS
-
-    if 'security_enabled' in data:
-        updates['anti_nuke_enabled'] = data['security_enabled']
-        anti_nuke_enabled = data['security_enabled']
-    if 'anti_raid' in data:
-        updates['raid_detection_enabled'] = data['anti_raid']
-        raid_detection_enabled = data['anti_raid']
-    if 'anti_raid_threshold' in data:
-        updates['raid_threshold'] = data['anti_raid_threshold']
-        raid_threshold = data['anti_raid_threshold']
-    if 'logging_enabled' in data:
-        updates['logs_enabled'] = data['logging_enabled']
-        logs_enabled = data['logging_enabled']
-    if 'log_channel_id' in data:
-        val = int(data['log_channel_id']) if data['log_channel_id'] else None
-        updates['logs_channel_id'] = val
-        logs_channel_id = val
-    if 'ticketing_enabled' in data:
-        updates['tickets_enabled'] = data['ticketing_enabled']
-        tickets_enabled = data['ticketing_enabled']
-    if 'ticket_category_id' in data:
-        val = int(data['ticket_category_id']) if data['ticket_category_id'] else None
-        updates['ticket_category_id'] = val
-        ticket_category_id = val
-    if 'leveling_enabled' in data:
-        updates['auto_roles_enabled'] = data['leveling_enabled']
-        auto_roles_enabled = data['leveling_enabled']
-    if 'level_roles' in data:
-        mapped = {int(lr['role_id']): lr['level'] for lr in data['level_roles']}
-        updates['auto_roles'] = mapped
-        auto_roles = mapped
-    if 'welcome_enabled' in data:
-        updates['welcome_enabled'] = data['welcome_enabled']
-        welcome_enabled = data['welcome_enabled']
-    if 'welcome_channel_id' in data:
-        val = int(data['welcome_channel_id']) if data['welcome_channel_id'] else None
-        updates['welcome_channel_id'] = val
-        welcome_channel_id = val
-    if 'welcome_message' in data:
-        updates['welcome_message'] = data['welcome_message']
-        welcome_message = data['welcome_message']
-    if 'ai_filters' in data:
-        updates['bad_words'] = data['ai_filters']
-        BAD_WORDS = data['ai_filters']
-
-    if updates:
-        update_settings(gid, **updates)
-        add_audit_log(gid, 'settings_update', f'Dashboard updated: {", ".join(updates.keys())}')
-
-    return jsonify({'success': True})
-
-@app.route('/api/guild/<guild_id>/activity', methods=['GET'])
-def get_guild_activity(guild_id):
-    """Get recent activity logs for a guild"""
-    if not bot_instance.is_ready():
-        return jsonify({'error': 'Bot not ready'}), 503
-
-    gid = int(guild_id)
-    activity = get_audit_logs(gid, limit=50)
-    return jsonify([
-        {
-            'id': str(i),
-            'event_type': log.get('action', 'event'),
-            'description': log.get('details', ''),
-            'user_name': log.get('user_name'),
-            'created_at': log.get('created_at').isoformat() if log.get('created_at') else None,
+    @app.route('/api/guild/<guild_id>/settings', methods=['GET'])
+    def get_guild_settings(guild_id):
+        """Get current settings for a guild"""
+        if not bot_instance.is_ready():
+            return jsonify({'error': 'Bot not ready'}), 503
+        
+        guild = bot_instance.get_guild(int(guild_id))
+        if not guild:
+            return jsonify({'error': 'Guild not found'}), 404
+        
+        # Map bot settings to dashboard format
+        settings = {
+            'prefix': '/',
+            'language': 'ar',
+            'security_enabled': anti_nuke_enabled,
+            'logging_enabled': logs_enabled,
+            'log_channel_id': str(logs_channel_id) if logs_channel_id else None,
+            'message_logs': logs_enabled,
+            'member_logs': logs_enabled,
+            'ticketing_enabled': tickets_enabled,
+            'ticket_category_id': str(ticket_category_id) if ticket_category_id else None,
+            'welcome_enabled': False,
+            'welcome_channel_id': None,
+            'welcome_message': None,
+            'leave_message': None,
+            'leveling_enabled': auto_roles_enabled,
+            'xp_per_message': 15,
+            'level_roles': [{'role_id': rid, 'level': lvl} for rid, lvl in auto_roles.items()],
+            'ai_moderation_enabled': True,
+            'ai_filters': BAD_WORDS,
+            'ai_auto_delete': True,
+            'anti_spam': True,
+            'anti_raid': raid_detection_enabled,
+            'anti_raid_threshold': raid_threshold,
+            'auto_mod': True,
+            'max_mentions': 5,
+            'analytics_enabled': True,
+            'total_messages': 0,
+            'total_members': guild.member_count,
+            'dm_enabled': dm_enabled,
+            'dm_rate_limit_seconds': dm_rate_limit_seconds,
+            'dm_whitelist': list(dm_whitelist),
+            'dm_stats': dm_stats.get(guild.id, {'total': 0, 'success': 0, 'failed': 0})
         }
-        for i, log in enumerate(activity)
-    ])
+        
+        return jsonify(settings)
 
-@app.route('/api/guild/<guild_id>/stats', methods=['GET'])
-def get_guild_stats(guild_id):
-    """Get statistics for a guild"""
-    if not bot_instance.is_ready():
-        return jsonify({'error': 'Bot not ready'}), 503
-    
-    guild = bot_instance.get_guild(int(guild_id))
-    if not guild:
-        return jsonify({'error': 'Guild not found'}), 404
-    
-    total_members = guild.member_count
-    online_members = sum(1 for m in guild.members if m.status != discord.Status.offline)
-    
-    stats = {
-        'total_members': total_members,
-        'online_members': online_members,
-        'text_channels': len(guild.text_channels),
-        'voice_channels': len(guild.voice_channels),
-        'roles': len(guild.roles),
-        'total_messages': 0  # Would need message tracking
-    }
-    
-    return jsonify(stats)
+    @app.route('/api/guild/<guild_id>/settings', methods=['POST'])
+    def update_guild_settings(guild_id):
+        """Update settings for a guild"""
+        if not bot_instance.is_ready():
+            return jsonify({'error': 'Bot not ready'}), 503
+        
+        guild = bot_instance.get_guild(int(guild_id))
+        if not guild:
+            return jsonify({'error': 'Guild not found'}), 404
+        
+        data = request.json
+        global anti_nuke_enabled, logs_enabled, logs_channel_id
+        global tickets_enabled, ticket_category_id
+        global auto_roles_enabled, auto_roles
+        global raid_detection_enabled, raid_threshold
+        global dm_enabled, dm_rate_limit_seconds, dm_whitelist, dm_stats
+        
+        # Update security settings
+        if 'security_enabled' in data:
+            anti_nuke_enabled = data['security_enabled']
+        if 'anti_raid' in data:
+            raid_detection_enabled = data['anti_raid']
+        if 'anti_raid_threshold' in data:
+            raid_threshold = data['anti_raid_threshold']
+        if 'anti_spam' in data:
+            # Anti-spam is always enabled in this bot
+            pass
+        if 'auto_mod' in data:
+            # Auto-mod is always enabled
+            pass
+        if 'max_mentions' in data:
+            # Max mentions is not configurable in current bot
+            pass
+        
+        # Update logging settings
+        if 'logging_enabled' in data:
+            logs_enabled = data['logging_enabled']
+        if 'log_channel_id' in data:
+            logs_channel_id = int(data['log_channel_id']) if data['log_channel_id'] else None
+        if 'message_logs' in data:
+            # Message logs tied to logging_enabled
+            pass
+        if 'member_logs' in data:
+            # Member logs tied to logging_enabled
+            pass
+        
+        # Update ticketing settings
+        if 'ticketing_enabled' in data:
+            tickets_enabled = data['ticketing_enabled']
+        if 'ticket_category_id' in data:
+            ticket_category_id = int(data['ticket_category_id']) if data['ticket_category_id'] else None
+        
+        # Update leveling/auto-roles settings
+        if 'leveling_enabled' in data:
+            auto_roles_enabled = data['leveling_enabled']
+        if 'level_roles' in data:
+            auto_roles = {int(lr['role_id']): lr['level'] for lr in data['level_roles']}
+        
+        # Update welcome settings (not implemented in bot yet)
+        if 'welcome_enabled' in data:
+            pass  # Would need to implement welcome system in bot
+        
+        # Update AI moderation settings
+        if 'ai_moderation_enabled' in data:
+            pass  # Bad word filter is always enabled
+        if 'ai_filters' in data:
+            global BAD_WORDS
+            BAD_WORDS = data['ai_filters']
+        
+        # Update DM settings
+        if 'dm_enabled' in data:
+            dm_enabled = data['dm_enabled']
+        if 'dm_rate_limit_seconds' in data:
+            dm_rate_limit_seconds = data['dm_rate_limit_seconds']
+        if 'dm_whitelist' in data:
+            dm_whitelist = set(data['dm_whitelist'])
+        
+        # Update general settings
+        if 'prefix' in data:
+            pass  # Prefix is hardcoded to /
+        if 'language' in data:
+            pass  # Language support not implemented
+        
+        return jsonify({'success': True})
 
-def run_flask():
-    """Run Flask server in separate thread"""
-    port = int(os.getenv('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+    @app.route('/api/guild/<guild_id>/activity', methods=['GET'])
+    def get_guild_activity(guild_id):
+        """Get recent activity logs for a guild"""
+        if not bot_instance.is_ready():
+            return jsonify({'error': 'Bot not ready'}), 503
+        
+        # Return mock activity data for now
+        # In a real implementation, you'd store activity logs in a database
+        activity = [
+            {
+                'id': '1',
+                'event_type': 'join',
+                'description': 'New member joined the server',
+                'created_at': datetime.now(timezone.utc).isoformat()
+            },
+            {
+                'id': '2',
+                'event_type': 'message',
+                'description': 'Message deleted by auto-mod',
+                'created_at': (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+            },
+            {
+                'id': '3',
+                'event_type': 'ticket',
+                'description': 'Support ticket opened',
+                'created_at': (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+            }
+        ]
+        
+        return jsonify(activity)
 
-# Start Flask server in background thread
-flask_thread = threading.Thread(target=run_flask, daemon=True)
-flask_thread.start()
+    @app.route('/api/guild/<guild_id>/stats', methods=['GET'])
+    def get_guild_stats(guild_id):
+        """Get statistics for a guild"""
+        if not bot_instance.is_ready():
+            return jsonify({'error': 'Bot not ready'}), 503
+        
+        guild = bot_instance.get_guild(int(guild_id))
+        if not guild:
+            return jsonify({'error': 'Guild not found'}), 404
+        
+        total_members = guild.member_count
+        online_members = sum(1 for m in guild.members if m.status != discord.Status.offline)
+        
+        stats = {
+            'total_members': total_members,
+            'online_members': online_members,
+            'text_channels': len(guild.text_channels),
+            'voice_channels': len(guild.voice_channels),
+            'roles': len(guild.roles),
+            'total_messages': 0  # Would need message tracking
+        }
+        
+        return jsonify(stats)
+
+    @app.route('/api/guild/<guild_id>/dm/send', methods=['POST'])
+    def send_dm_via_api(guild_id):
+        """Send DM to specific user or all members via API"""
+        if not bot_instance.is_ready():
+            return jsonify({'error': 'Bot not ready'}), 503
+        
+        if not dm_enabled:
+            return jsonify({'error': 'DM system is disabled'}), 400
+        
+        guild = bot_instance.get_guild(int(guild_id))
+        if not guild:
+            return jsonify({'error': 'Guild not found'}), 404
+        
+        data = request.json
+        message = data.get('message')
+        target_type = data.get('target_type', 'user')  # 'user' or 'all'
+        target_user_id = data.get('user_id')
+        use_embed = data.get('use_embed', False)
+        embed_title = data.get('embed_title')
+        embed_color = data.get('embed_color')
+        embed_description = data.get('embed_description')
+        
+        if not message:
+            return jsonify({'error': 'Message is required'}), 400
+        
+        success_count = 0
+        failed_count = 0
+        failed_users = []
+        
+        # Prepare message content
+        if use_embed:
+            embed = discord.Embed(
+                title=embed_title or 'رسالة من الإدارة',
+                description=embed_description or message,
+                color=discord.Color.blue() if not embed_color else discord.Color(int(embed_color.replace('#', ''), 16))
+            )
+            embed.set_footer(text=f'من: {guild.name}')
+            embed.timestamp = datetime.now(timezone.utc)
+        else:
+            embed = None
+        
+        async def send_dm_task():
+            nonlocal success_count, failed_count, failed_users
+            
+            if target_type == 'all':
+                for member in guild.members:
+                    if member.bot:
+                        continue
+                    try:
+                        if embed:
+                            await member.send(embed=embed)
+                        else:
+                            await member.send(message)
+                        success_count += 1
+                        await asyncio.sleep(0.5)
+                    except discord.Forbidden:
+                        failed_count += 1
+                        failed_users.append(f'{member.display_name} (DMs closed)')
+                    except Exception as e:
+                        failed_count += 1
+                        failed_users.append(f'{member.display_name} ({str(e)[:50]})')
+            elif target_type == 'user' and target_user_id:
+                target_member = guild.get_member(int(target_user_id))
+                if target_member:
+                    try:
+                        if embed:
+                            await target_member.send(embed=embed)
+                        else:
+                            await target_member.send(message)
+                        success_count += 1
+                    except discord.Forbidden:
+                        failed_count += 1
+                        failed_users.append(f'{target_member.display_name} (DMs closed)')
+                    except Exception as e:
+                        failed_count += 1
+                        failed_users.append(f'{target_member.display_name} ({str(e)[:50]})')
+                else:
+                    failed_count += 1
+                    failed_users.append(f'User {target_user_id} not found')
+            
+            # Update stats
+            if guild.id not in dm_stats:
+                dm_stats[guild.id] = {'total': 0, 'success': 0, 'failed': 0}
+            dm_stats[guild.id]['total'] += success_count + failed_count
+            dm_stats[guild.id]['success'] += success_count
+            dm_stats[guild.id]['failed'] += failed_count
+            
+            # Send log
+            await send_log(guild, '📨 DM Sent via API', f'تم إرسال رسالة خاصة عبر الـ API\nالنوع: {target_type}\nنجاح: {success_count}\nفشل: {failed_count}')
+        
+        # Run async task in event loop
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future = executor.submit(
+                asyncio.run_coroutine_threadsafe,
+                send_dm_task(),
+                bot_instance.loop
+            )
+            future.result()
+        
+        return jsonify({
+            'success': True,
+            'success_count': success_count,
+            'failed_count': failed_count,
+            'failed_users': failed_users[:10]  # Return first 10 failed users
+        })
+
+    @app.route('/api/guild/<guild_id>/dm/stats', methods=['GET'])
+    def get_dm_stats_api(guild_id):
+        """Get DM statistics for a guild via API"""
+        if not bot_instance.is_ready():
+            return jsonify({'error': 'Bot not ready'}), 503
+        
+        guild = bot_instance.get_guild(int(guild_id))
+        if not guild:
+            return jsonify({'error': 'Guild not found'}), 404
+        
+        stats = dm_stats.get(guild.id, {'total': 0, 'success': 0, 'failed': 0})
+        
+        return jsonify({
+            'total': stats['total'],
+            'success': stats['success'],
+            'failed': stats['failed'],
+            'success_rate': (stats['success'] / stats['total'] * 100) if stats['total'] > 0 else 0
+        })
+
+    def run_flask():
+        """Run Flask server in separate thread"""
+        app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
+
+    # Start Flask server in background thread
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    print("Flask API server started on port 5000")
 
 # تشغيل البوت باستخدام التوكن الخاص بك
 TOKEN = os.getenv('DISCORD_TOKEN')
