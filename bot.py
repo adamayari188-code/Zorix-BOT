@@ -1,7 +1,9 @@
 import discord
 from discord.ext import commands, tasks
+from discord import app_commands
 import os
 import sys
+import threading
 from dotenv import load_dotenv
 import asyncio
 import aiohttp
@@ -10,7 +12,8 @@ from collections import defaultdict
 import re
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import threading
+from settings_manager import get_settings, update_settings
+from db import add_audit_log, get_audit_logs
 
 load_dotenv() # حمل المتغيرات من ملف .env
 
@@ -28,7 +31,7 @@ bot = commands.Bot(command_prefix='/', intents=intents, help_command=None)
 
 # إعدادات بسيطة لمكافحة تكرار الرسائل (سبام)
 SPAM_WINDOW_SECONDS = 20  # نافذة فحص التكرار
-SPAM_TIMEOUT_STEPS_MINUTES = [1, 5, 15, 60]  # العقوبات التصاعدية بالدقائق
+SPAM_TIMEOUT_STEPS_MINUTES = [10, 20, 40, 80, 160, 320, 640, 1280]  # العقوبات التصاعدية بالدقائق (تبدأ من 10 وتتضاعف)
 _recent_message_cache = {}  # آخر رسالة لكل عضو داخل السيرفر
 _spam_offense_counts = defaultdict(int)  # عدد مرات المخالفة لكل عضو
 
@@ -396,22 +399,40 @@ async def on_message(message):
             if prev_content == normalized_content and (now - prev_time).total_seconds() <= SPAM_WINDOW_SECONDS:
                 _spam_offense_counts[key] += 1
                 offense_count = _spam_offense_counts[key]
-                step_index = min(offense_count - 1, len(SPAM_TIMEOUT_STEPS_MINUTES) - 1)
-                timeout_minutes = SPAM_TIMEOUT_STEPS_MINUTES[step_index]
-                until = now + timedelta(minutes=timeout_minutes)
+                
+                # التحقق إذا كان العضو لديه رتبة من قائمة الحظر التلقائي
+                member_role_ids = {role.id for role in member.roles}
+                has_spam_ban_role = bool(member_role_ids & spam_ban_roles)
+                
+                if has_spam_ban_role:
+                    # حظر العضو نهائيًا
+                    try:
+                        await member.ban(reason=f"Automatic ban for spam in restricted role (offense #{offense_count}).")
+                        await message.channel.send(
+                            f'{member.mention} تم حظرك نهائيًا بسبب السبام في رتبة محدودة.'
+                        )
+                    except discord.Forbidden:
+                        print(f'لا أمتلك صلاحية حظر العضو {member.display_name} في السيرفر {message.guild.name}.')
+                    except Exception as e:
+                        print(f'حدث خطأ أثناء حظر العضو {member.display_name}: {e}')
+                else:
+                    # السلوك العادي: تايم أوت
+                    step_index = min(offense_count - 1, len(SPAM_TIMEOUT_STEPS_MINUTES) - 1)
+                    timeout_minutes = SPAM_TIMEOUT_STEPS_MINUTES[step_index]
+                    until = now + timedelta(minutes=timeout_minutes)
 
-                try:
-                    await member.timeout(
-                        until,
-                        reason=f"Duplicate message spam detected (offense #{offense_count}).",
-                    )
-                    await message.channel.send(
-                        f'{member.mention} تم إعطاؤك تايم أوت لمدة {timeout_minutes} دقيقة بسبب تكرار الرسائل.'
-                    )
-                except discord.Forbidden:
-                    print(f'لا أمتلك صلاحية إعطاء تايم أوت للعضو {member.display_name} في السيرفر {message.guild.name}.')
-                except Exception as e:
-                    print(f'حدث خطأ أثناء إعطاء تايم أوت للعضو {member.display_name}: {e}')
+                    try:
+                        await member.timeout(
+                            until,
+                            reason=f"Duplicate message spam detected (offense #{offense_count}).",
+                        )
+                        await message.channel.send(
+                            f'{member.mention} تم إعطاؤك تايم أوت لمدة {timeout_minutes} دقيقة بسبب تكرار الرسائل.'
+                        )
+                    except discord.Forbidden:
+                        print(f'لا أمتلك صلاحية إعطاء تايم أوت للعضو {member.display_name} في السيرفر {message.guild.name}.')
+                    except Exception as e:
+                        print(f'حدث خطأ أثناء إعطاء تايم أوت للعضو {member.display_name}: {e}')
 
     await bot.process_commands(message)
 
@@ -451,6 +472,9 @@ raid_threshold = 5 # عدد الأعضاء في فترة زمنية قصيرة
 raid_window_seconds = 10
 raid_joined_cache = []
 lockdown_mode = False
+
+# ============= نظام الحظر التلقائي للسبام في رتب محددة =============
+spam_ban_roles = set() # معرفات الرتب التي يتم فيها الحظر تلقائيًا عند السبام
 
 @bot.tree.command(name='antinuke', description='تحكم في نظام الحماية')
 async def antinuke_command(interaction: discord.Interaction, action: str = None, user_id: int = None):
@@ -499,6 +523,35 @@ async def lockdown_command(interaction: discord.Interaction, action: str = None)
     else:
         status = 'مفعل' if lockdown_mode else 'معطل'
         await interaction.response.send_message(f'وضع الطوارئ: {status}', ephemeral=True)
+
+@bot.tree.command(name='spamban', description='تحكم في رتب الحظر التلقائي للسبام')
+@app_commands.describe(action='الإجراء: add/remove/list', role='الرتبة المراد إضافتها/إزالتها')
+async def spamban_command(interaction: discord.Interaction, action: str, role: discord.Role = None):
+    """تحكم في رتب الحظر التلقائي للسبام. الاستخدام: /spamban add/remove/list [@role]"""
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message('❌ ليس لديك صلاحيات إدارية.', ephemeral=True)
+        return
+    
+    global spam_ban_roles
+    
+    if action == 'add' and role:
+        spam_ban_roles.add(role.id)
+        await interaction.response.send_message(f'✅ تم إضافة الرتبة {role.name} لقائمة الحظر التلقائي للسبام.', ephemeral=True)
+    elif action == 'remove' and role:
+        spam_ban_roles.discard(role.id)
+        await interaction.response.send_message(f'❌ تم إزالة الرتبة {role.name} من قائمة الحظر التلقائي للسبام.', ephemeral=True)
+    elif action == 'list':
+        if spam_ban_roles:
+            role_names = []
+            for role_id in spam_ban_roles:
+                r = interaction.guild.get_role(role_id)
+                if r:
+                    role_names.append(r.name)
+            await interaction.response.send_message(f'📋 رتب الحظر التلقائي للسبام:\n' + '\n'.join(role_names), ephemeral=True)
+        else:
+            await interaction.response.send_message('📋 لا توجد رتب في قائمة الحظر التلقائي للسبام.', ephemeral=True)
+    else:
+        await interaction.response.send_message('الاستخدام: /spamban add/remove/list [@role]', ephemeral=True)
 
 # ============= نظام اللوق (Logs System) =============
 logs_enabled = True
@@ -783,6 +836,23 @@ async def system_command(interaction: discord.Interaction, system_name: str = No
     else:
         await interaction.response.send_message('الاستخدام: /system [anti_nuke/logs/tickets/auto_roles] [enable/disable/list]', ephemeral=True)
 
+# ============= نظام إرسال الرسائل =============
+@bot.tree.command(name='send', description='إرسال رسالة إلى قناة محددة')
+@app_commands.describe(channel='القناة المطلوب إرسال الرسالة إليها', message='الرسالة المطلوب إرسالها')
+async def send_message_command(interaction: discord.Interaction, channel: discord.TextChannel, message: str):
+    """إرسال رسالة إلى قناة محددة"""
+    if not interaction.user.guild_permissions.manage_messages:
+        await interaction.response.send_message('❌ ليس لديك صلاحيات إدارة الرسائل.', ephemeral=True)
+        return
+    
+    try:
+        await channel.send(message)
+        await interaction.response.send_message(f'✅ تم إرسال الرسالة إلى {channel.mention}', ephemeral=True)
+    except discord.Forbidden:
+        await interaction.response.send_message('❌ لا أمتلك صلاحية الإرسال في هذه القناة.', ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f'❌ حدث خطأ: {e}', ephemeral=True)
+
 # ============= نظام المساعدة =============
 @bot.tree.command(name='help', description='عرض جميع الخدمات والأوامر المتاحة')
 async def help_command(interaction: discord.Interaction):
@@ -800,7 +870,13 @@ async def help_command(interaction: discord.Interaction):
     )
     
     embed.add_field(
-        name='📜 نظام اللوق (Logs System)',
+        name='� نظام الحظر التلقائي للسبام (Spam Ban)',
+        value='حظر تلقائي للأعضاء الذين يسبام في رتب محددة\nالأمر: `/spamban`',
+        inline=False
+    )
+    
+    embed.add_field(
+        name='�📜 نظام اللوق (Logs System)',
         value='تسجيل جميع الأحداث في قناة مخصصة\nالأمر: `/logs`',
         inline=False
     )
@@ -836,7 +912,13 @@ async def help_command(interaction: discord.Interaction):
     )
     
     embed.add_field(
-        name='💬 الرد الذكي',
+        name='� إرسال الرسائل',
+        value='إرسال رسالة إلى قناة محددة\nالأمر: `/send`',
+        inline=False
+    )
+    
+    embed.add_field(
+        name='�💬 الرد الذكي',
         value='البوت يرد على أسئلتك باستخدام الذكاء الاصطناعي',
         inline=False
     )
@@ -953,32 +1035,34 @@ def get_guild_settings(guild_id):
     if not guild:
         return jsonify({'error': 'Guild not found'}), 404
     
-    # Map bot settings to dashboard format
+    gid = int(guild_id)
+    cfg = get_settings(gid)
+
     settings = {
         'prefix': '/',
         'language': 'ar',
-        'security_enabled': anti_nuke_enabled,
-        'logging_enabled': logs_enabled,
-        'log_channel_id': str(logs_channel_id) if logs_channel_id else None,
-        'message_logs': logs_enabled,
-        'member_logs': logs_enabled,
-        'ticketing_enabled': tickets_enabled,
-        'ticket_category_id': str(ticket_category_id) if ticket_category_id else None,
-        'welcome_enabled': welcome_enabled,
-        'welcome_channel_id': str(welcome_channel_id) if welcome_channel_id else None,
-        'welcome_message': welcome_message,
+        'security_enabled': cfg.get('anti_nuke_enabled', anti_nuke_enabled),
+        'logging_enabled': cfg.get('logs_enabled', logs_enabled),
+        'log_channel_id': str(cfg['logs_channel_id']) if cfg.get('logs_channel_id') else None,
+        'message_logs': cfg.get('logs_enabled', logs_enabled),
+        'member_logs': cfg.get('logs_enabled', logs_enabled),
+        'ticketing_enabled': cfg.get('tickets_enabled', tickets_enabled),
+        'ticket_category_id': str(cfg['ticket_category_id']) if cfg.get('ticket_category_id') else None,
+        'welcome_enabled': cfg.get('welcome_enabled', welcome_enabled),
+        'welcome_channel_id': str(cfg['welcome_channel_id']) if cfg.get('welcome_channel_id') else None,
+        'welcome_message': cfg.get('welcome_message', welcome_message),
         'leave_message': None,
-        'leveling_enabled': auto_roles_enabled,
+        'leveling_enabled': cfg.get('auto_roles_enabled', auto_roles_enabled),
         'xp_per_message': 15,
-        'level_roles': [{'role_id': rid, 'level': lvl} for rid, lvl in auto_roles.items()],
+        'level_roles': [{'role_id': str(rid), 'level': lvl} for rid, lvl in (cfg.get('auto_roles') or {}).items()],
         'ai_moderation_enabled': True,
-        'ai_filters': BAD_WORDS,
+        'ai_filters': cfg.get('bad_words') or BAD_WORDS,
         'ai_auto_delete': True,
         'anti_spam': True,
-        'anti_raid': raid_detection_enabled,
-        'anti_raid_threshold': raid_threshold,
+        'anti_raid': cfg.get('raid_detection_enabled', raid_detection_enabled),
+        'anti_raid_threshold': cfg.get('raid_threshold', raid_threshold),
         'auto_mod': True,
-        'max_mentions': 5,
+        'max_mentions': cfg.get('max_mentions', 5),
         'analytics_enabled': True,
         'total_messages': 0,
         'total_members': guild.member_count
@@ -996,75 +1080,63 @@ def update_guild_settings(guild_id):
     if not guild:
         return jsonify({'error': 'Guild not found'}), 404
     
-    data = request.json
+    gid = int(guild_id)
+    data = request.json or {}
+    updates = {}
     global anti_nuke_enabled, logs_enabled, logs_channel_id
     global tickets_enabled, ticket_category_id
     global auto_roles_enabled, auto_roles
     global raid_detection_enabled, raid_threshold
-    global welcome_enabled, welcome_channel_id, welcome_message
-    
-    # Update security settings
+    global welcome_enabled, welcome_channel_id, welcome_message, BAD_WORDS
+
     if 'security_enabled' in data:
+        updates['anti_nuke_enabled'] = data['security_enabled']
         anti_nuke_enabled = data['security_enabled']
     if 'anti_raid' in data:
+        updates['raid_detection_enabled'] = data['anti_raid']
         raid_detection_enabled = data['anti_raid']
     if 'anti_raid_threshold' in data:
+        updates['raid_threshold'] = data['anti_raid_threshold']
         raid_threshold = data['anti_raid_threshold']
-    if 'anti_spam' in data:
-        # Anti-spam is always enabled in this bot
-        pass
-    if 'auto_mod' in data:
-        # Auto-mod is always enabled
-        pass
-    if 'max_mentions' in data:
-        # Max mentions is not configurable in current bot
-        pass
-    
-    # Update logging settings
     if 'logging_enabled' in data:
+        updates['logs_enabled'] = data['logging_enabled']
         logs_enabled = data['logging_enabled']
     if 'log_channel_id' in data:
-        logs_channel_id = int(data['log_channel_id']) if data['log_channel_id'] else None
-    if 'message_logs' in data:
-        # Message logs tied to logging_enabled
-        pass
-    if 'member_logs' in data:
-        # Member logs tied to logging_enabled
-        pass
-    
-    # Update ticketing settings
+        val = int(data['log_channel_id']) if data['log_channel_id'] else None
+        updates['logs_channel_id'] = val
+        logs_channel_id = val
     if 'ticketing_enabled' in data:
+        updates['tickets_enabled'] = data['ticketing_enabled']
         tickets_enabled = data['ticketing_enabled']
     if 'ticket_category_id' in data:
-        ticket_category_id = int(data['ticket_category_id']) if data['ticket_category_id'] else None
-    
-    # Update leveling/auto-roles settings
+        val = int(data['ticket_category_id']) if data['ticket_category_id'] else None
+        updates['ticket_category_id'] = val
+        ticket_category_id = val
     if 'leveling_enabled' in data:
+        updates['auto_roles_enabled'] = data['leveling_enabled']
         auto_roles_enabled = data['leveling_enabled']
     if 'level_roles' in data:
-        auto_roles = {int(lr['role_id']): lr['level'] for lr in data['level_roles']}
-    
-    # Update welcome settings
+        mapped = {int(lr['role_id']): lr['level'] for lr in data['level_roles']}
+        updates['auto_roles'] = mapped
+        auto_roles = mapped
     if 'welcome_enabled' in data:
+        updates['welcome_enabled'] = data['welcome_enabled']
         welcome_enabled = data['welcome_enabled']
     if 'welcome_channel_id' in data:
-        welcome_channel_id = int(data['welcome_channel_id']) if data['welcome_channel_id'] else None
+        val = int(data['welcome_channel_id']) if data['welcome_channel_id'] else None
+        updates['welcome_channel_id'] = val
+        welcome_channel_id = val
     if 'welcome_message' in data:
+        updates['welcome_message'] = data['welcome_message']
         welcome_message = data['welcome_message']
-    
-    # Update AI moderation settings
-    if 'ai_moderation_enabled' in data:
-        pass  # Bad word filter is always enabled
     if 'ai_filters' in data:
-        global BAD_WORDS
+        updates['bad_words'] = data['ai_filters']
         BAD_WORDS = data['ai_filters']
-    
-    # Update general settings
-    if 'prefix' in data:
-        pass  # Prefix is hardcoded to /
-    if 'language' in data:
-        pass  # Language support not implemented
-    
+
+    if updates:
+        update_settings(gid, **updates)
+        add_audit_log(gid, 'settings_update', f'Dashboard updated: {", ".join(updates.keys())}')
+
     return jsonify({'success': True})
 
 @app.route('/api/guild/<guild_id>/activity', methods=['GET'])
@@ -1072,31 +1144,19 @@ def get_guild_activity(guild_id):
     """Get recent activity logs for a guild"""
     if not bot_instance.is_ready():
         return jsonify({'error': 'Bot not ready'}), 503
-    
-    # Return mock activity data for now
-    # In a real implementation, you'd store activity logs in a database
-    activity = [
+
+    gid = int(guild_id)
+    activity = get_audit_logs(gid, limit=50)
+    return jsonify([
         {
-            'id': '1',
-            'event_type': 'join',
-            'description': 'New member joined the server',
-            'created_at': datetime.now(timezone.utc).isoformat()
-        },
-        {
-            'id': '2',
-            'event_type': 'message',
-            'description': 'Message deleted by auto-mod',
-            'created_at': (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
-        },
-        {
-            'id': '3',
-            'event_type': 'ticket',
-            'description': 'Support ticket opened',
-            'created_at': (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+            'id': str(i),
+            'event_type': log.get('action', 'event'),
+            'description': log.get('details', ''),
+            'user_name': log.get('user_name'),
+            'created_at': log.get('created_at').isoformat() if log.get('created_at') else None,
         }
-    ]
-    
-    return jsonify(activity)
+        for i, log in enumerate(activity)
+    ])
 
 @app.route('/api/guild/<guild_id>/stats', methods=['GET'])
 def get_guild_stats(guild_id):

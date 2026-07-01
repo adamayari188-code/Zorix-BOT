@@ -3,3 +3,4 @@ python-dotenv
 aiohttp
 flask
 flask-cors
+pymongo
