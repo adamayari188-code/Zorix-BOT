@@ -8,6 +8,9 @@ import aiohttp
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 import re
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+import threading
 
 load_dotenv() # حمل المتغيرات من ملف .env
 
@@ -544,6 +547,40 @@ tickets_enabled = True
 ticket_category_id = None
 ticket_counter = 0
 
+# ============= نظام الترحيب (Welcome System) =============
+welcome_enabled = True
+welcome_channel_id = None
+welcome_message = 'أهلاً وسهلاً {member.mention} في السيرفر! نتمنى لك وقتاً ممتعاً معنا 🎉'
+
+@bot.tree.command(name='welcome', description='تحكم في نظام الترحيب')
+async def welcome_command(interaction: discord.Interaction, action: str = None, channel: discord.TextChannel = None, message: str = None):
+    """تحكم في نظام الترحيب. الاستخدام: /welcome enable/disable/setchannel/setmessage [channel] [message]"""
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message('❌ ليس لديك صلاحيات إدارية.', ephemeral=True)
+        return
+    
+    global welcome_enabled, welcome_channel_id, welcome_message
+    
+    if action == 'enable':
+        welcome_enabled = True
+        await interaction.response.send_message('✅ تم تفعيل نظام الترحيب.', ephemeral=True)
+    elif action == 'disable':
+        welcome_enabled = False
+        await interaction.response.send_message('❌ تم تعطيل نظام الترحيب.', ephemeral=True)
+    elif action == 'setchannel' and channel:
+        welcome_channel_id = channel.id
+        await interaction.response.send_message(f'✅ تم ضبط قناة الترحيب إلى: {channel.mention}', ephemeral=True)
+    elif action == 'setmessage' and message:
+        welcome_message = message
+        await interaction.response.send_message('✅ تم تحديث رسالة الترحيب.', ephemeral=True)
+    else:
+        status = 'مفعل' if welcome_enabled else 'معطل'
+        channel_mention = f'<#{welcome_channel_id}>' if welcome_channel_id else 'غير محدد'
+        await interaction.response.send_message(
+            f'نظام الترحيب: {status}\nقناة الترحيب: {channel_mention}\nالرسالة: {welcome_message}',
+            ephemeral=True
+        )
+
 @bot.tree.command(name='ticket', description='إنشاء تذكرة جديدة')
 async def ticket_command(interaction: discord.Interaction):
     """إنشاء تذكرة جديدة"""
@@ -775,6 +812,12 @@ async def help_command(interaction: discord.Interaction):
     )
     
     embed.add_field(
+        name='👋 نظام الترحيب (Welcome System)',
+        value='رسالة ترحيب تلقائية للأعضاء الجدد\nالأمر: `/welcome`',
+        inline=False
+    )
+    
+    embed.add_field(
         name='🧑‍💼 نظام إدارة الرتب (Roles System)',
         value='إعطاء/سحب رتب، رتب تلقائية\nالأوامر: `/role`, `/autorole`',
         inline=False
@@ -848,6 +891,16 @@ async def on_member_join(member):
     
     await send_log(member.guild, '👋 Member Joined', f'انضم العضو: {member} ({member.id})')
     
+    # إرسال رسالة الترحيب
+    if welcome_enabled and welcome_channel_id:
+        welcome_channel = member.guild.get_channel(welcome_channel_id)
+        if welcome_channel:
+            try:
+                formatted_message = welcome_message.format(member=member, guild=member.guild)
+                await welcome_channel.send(formatted_message)
+            except Exception as e:
+                print(f'حدث خطأ أثناء إرسال رسالة الترحيب: {e}')
+    
     # إعطاء الرتب التلقائية
     if auto_roles_enabled and auto_roles:
         for role_id, level in auto_roles.items():
@@ -856,6 +909,227 @@ async def on_member_join(member):
                 if role:
                     await member.add_roles(role)
 
+
+# ============= Flask API Server for Dashboard Integration =============
+app = Flask(__name__)
+CORS(app)
+
+# Store bot instance for API access
+bot_instance = bot
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint"""
+    return jsonify({
+        'status': 'ok',
+        'bot_connected': bot_instance.is_ready() if hasattr(bot_instance, 'is_ready') else False
+    })
+
+@app.route('/api/guilds', methods=['GET'])
+def get_guilds():
+    """Get all guilds the bot is in"""
+    if not bot_instance.is_ready():
+        return jsonify({'error': 'Bot not ready'}), 503
+    
+    guilds_data = []
+    for guild in bot_instance.guilds:
+        guilds_data.append({
+            'id': str(guild.id),
+            'name': guild.name,
+            'icon_url': guild.icon.url if guild.icon else None,
+            'member_count': guild.member_count,
+            'bot_added': True
+        })
+    
+    return jsonify(guilds_data)
+
+@app.route('/api/guild/<guild_id>/settings', methods=['GET'])
+def get_guild_settings(guild_id):
+    """Get current settings for a guild"""
+    if not bot_instance.is_ready():
+        return jsonify({'error': 'Bot not ready'}), 503
+    
+    guild = bot_instance.get_guild(int(guild_id))
+    if not guild:
+        return jsonify({'error': 'Guild not found'}), 404
+    
+    # Map bot settings to dashboard format
+    settings = {
+        'prefix': '/',
+        'language': 'ar',
+        'security_enabled': anti_nuke_enabled,
+        'logging_enabled': logs_enabled,
+        'log_channel_id': str(logs_channel_id) if logs_channel_id else None,
+        'message_logs': logs_enabled,
+        'member_logs': logs_enabled,
+        'ticketing_enabled': tickets_enabled,
+        'ticket_category_id': str(ticket_category_id) if ticket_category_id else None,
+        'welcome_enabled': welcome_enabled,
+        'welcome_channel_id': str(welcome_channel_id) if welcome_channel_id else None,
+        'welcome_message': welcome_message,
+        'leave_message': None,
+        'leveling_enabled': auto_roles_enabled,
+        'xp_per_message': 15,
+        'level_roles': [{'role_id': rid, 'level': lvl} for rid, lvl in auto_roles.items()],
+        'ai_moderation_enabled': True,
+        'ai_filters': BAD_WORDS,
+        'ai_auto_delete': True,
+        'anti_spam': True,
+        'anti_raid': raid_detection_enabled,
+        'anti_raid_threshold': raid_threshold,
+        'auto_mod': True,
+        'max_mentions': 5,
+        'analytics_enabled': True,
+        'total_messages': 0,
+        'total_members': guild.member_count
+    }
+    
+    return jsonify(settings)
+
+@app.route('/api/guild/<guild_id>/settings', methods=['POST'])
+def update_guild_settings(guild_id):
+    """Update settings for a guild"""
+    if not bot_instance.is_ready():
+        return jsonify({'error': 'Bot not ready'}), 503
+    
+    guild = bot_instance.get_guild(int(guild_id))
+    if not guild:
+        return jsonify({'error': 'Guild not found'}), 404
+    
+    data = request.json
+    global anti_nuke_enabled, logs_enabled, logs_channel_id
+    global tickets_enabled, ticket_category_id
+    global auto_roles_enabled, auto_roles
+    global raid_detection_enabled, raid_threshold
+    global welcome_enabled, welcome_channel_id, welcome_message
+    
+    # Update security settings
+    if 'security_enabled' in data:
+        anti_nuke_enabled = data['security_enabled']
+    if 'anti_raid' in data:
+        raid_detection_enabled = data['anti_raid']
+    if 'anti_raid_threshold' in data:
+        raid_threshold = data['anti_raid_threshold']
+    if 'anti_spam' in data:
+        # Anti-spam is always enabled in this bot
+        pass
+    if 'auto_mod' in data:
+        # Auto-mod is always enabled
+        pass
+    if 'max_mentions' in data:
+        # Max mentions is not configurable in current bot
+        pass
+    
+    # Update logging settings
+    if 'logging_enabled' in data:
+        logs_enabled = data['logging_enabled']
+    if 'log_channel_id' in data:
+        logs_channel_id = int(data['log_channel_id']) if data['log_channel_id'] else None
+    if 'message_logs' in data:
+        # Message logs tied to logging_enabled
+        pass
+    if 'member_logs' in data:
+        # Member logs tied to logging_enabled
+        pass
+    
+    # Update ticketing settings
+    if 'ticketing_enabled' in data:
+        tickets_enabled = data['ticketing_enabled']
+    if 'ticket_category_id' in data:
+        ticket_category_id = int(data['ticket_category_id']) if data['ticket_category_id'] else None
+    
+    # Update leveling/auto-roles settings
+    if 'leveling_enabled' in data:
+        auto_roles_enabled = data['leveling_enabled']
+    if 'level_roles' in data:
+        auto_roles = {int(lr['role_id']): lr['level'] for lr in data['level_roles']}
+    
+    # Update welcome settings
+    if 'welcome_enabled' in data:
+        welcome_enabled = data['welcome_enabled']
+    if 'welcome_channel_id' in data:
+        welcome_channel_id = int(data['welcome_channel_id']) if data['welcome_channel_id'] else None
+    if 'welcome_message' in data:
+        welcome_message = data['welcome_message']
+    
+    # Update AI moderation settings
+    if 'ai_moderation_enabled' in data:
+        pass  # Bad word filter is always enabled
+    if 'ai_filters' in data:
+        global BAD_WORDS
+        BAD_WORDS = data['ai_filters']
+    
+    # Update general settings
+    if 'prefix' in data:
+        pass  # Prefix is hardcoded to /
+    if 'language' in data:
+        pass  # Language support not implemented
+    
+    return jsonify({'success': True})
+
+@app.route('/api/guild/<guild_id>/activity', methods=['GET'])
+def get_guild_activity(guild_id):
+    """Get recent activity logs for a guild"""
+    if not bot_instance.is_ready():
+        return jsonify({'error': 'Bot not ready'}), 503
+    
+    # Return mock activity data for now
+    # In a real implementation, you'd store activity logs in a database
+    activity = [
+        {
+            'id': '1',
+            'event_type': 'join',
+            'description': 'New member joined the server',
+            'created_at': datetime.now(timezone.utc).isoformat()
+        },
+        {
+            'id': '2',
+            'event_type': 'message',
+            'description': 'Message deleted by auto-mod',
+            'created_at': (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        },
+        {
+            'id': '3',
+            'event_type': 'ticket',
+            'description': 'Support ticket opened',
+            'created_at': (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+        }
+    ]
+    
+    return jsonify(activity)
+
+@app.route('/api/guild/<guild_id>/stats', methods=['GET'])
+def get_guild_stats(guild_id):
+    """Get statistics for a guild"""
+    if not bot_instance.is_ready():
+        return jsonify({'error': 'Bot not ready'}), 503
+    
+    guild = bot_instance.get_guild(int(guild_id))
+    if not guild:
+        return jsonify({'error': 'Guild not found'}), 404
+    
+    total_members = guild.member_count
+    online_members = sum(1 for m in guild.members if m.status != discord.Status.offline)
+    
+    stats = {
+        'total_members': total_members,
+        'online_members': online_members,
+        'text_channels': len(guild.text_channels),
+        'voice_channels': len(guild.voice_channels),
+        'roles': len(guild.roles),
+        'total_messages': 0  # Would need message tracking
+    }
+    
+    return jsonify(stats)
+
+def run_flask():
+    """Run Flask server in separate thread"""
+    port = int(os.getenv('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+
+# Start Flask server in background thread
+flask_thread = threading.Thread(target=run_flask, daemon=True)
+flask_thread.start()
 
 # تشغيل البوت باستخدام التوكن الخاص بك
 TOKEN = os.getenv('DISCORD_TOKEN')
